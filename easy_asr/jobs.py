@@ -235,7 +235,9 @@ class JobManager:
 
 def parse_formats(value: str) -> set[str]:
     values = {item.strip().lower() for item in value.split(",") if item.strip()}
-    allowed = {"txt", "srt", "json"}
+    allowed = {"txt", "srt", "vtt", "tsv", "csv", "json"}
+    if "all" in values:
+        return allowed
     return values & allowed or {"txt"}
 
 

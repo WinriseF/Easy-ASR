@@ -123,7 +123,7 @@ def create_job(
     compute_type: Annotated[str, Form()] = "int8",
     whisper_preset: Annotated[str, Form()] = "balanced",
     apply_terminology: Annotated[bool, Form()] = True,
-    output_formats: Annotated[str, Form()] = "txt,srt,json",
+    output_formats: Annotated[str, Form()] = "txt,srt,vtt,tsv,json",
 ) -> dict:
     try:
         if file is not None and file.filename:
@@ -198,7 +198,7 @@ def transcribe_browser(
     compute_type: Annotated[str, Form()] = "int8",
     whisper_preset: Annotated[str, Form()] = "balanced",
     apply_terminology: Annotated[bool, Form()] = True,
-    output_formats: Annotated[str, Form()] = "txt,srt,json",
+    output_formats: Annotated[str, Form()] = "txt,srt,vtt,tsv,json",
 ) -> dict:
     try:
         options = EngineOptions(
