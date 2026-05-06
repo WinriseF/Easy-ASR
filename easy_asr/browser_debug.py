@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import math
 import subprocess
 import threading
 import time
@@ -17,12 +18,13 @@ from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from easy_asr.audio import require_ffmpeg
+from easy_asr.audio import probe_duration, require_ffmpeg
 from easy_asr.engines.base import EngineOptions
 from easy_asr.jobs import JobManager
 
 
 DEFAULT_DEBUG_ENDPOINT = "http://127.0.0.1:9222"
+DEFAULT_BROWSER_HOME_URL = "https://www.bing.com"
 INSTALL_HINT = "请先安装 requirements-browser-debug.txt，然后重启本地服务。"
 MEDIA_URL_RE = re.compile(
     r"(\.m3u8|\.mpd|\.mp4|\.m4a|\.mp3|\.aac|\.wav|\.flac|\.ogg|\.oga|\.webm|\.ts|\.m4s)(?:[?#]|$)",
@@ -98,6 +100,7 @@ class BrowserImportRecord:
     updated_at: str
     media_path: Path
     job_id: str = ""
+    duration_seconds: float | None = None
     error: str = ""
     events: list[BrowserImportEvent] = field(default_factory=list)
 
@@ -116,6 +119,7 @@ class BrowserImportRecord:
             "updated_at": self.updated_at,
             "media_path": str(self.media_path),
             "job_id": self.job_id,
+            "duration_seconds": self.duration_seconds,
             "error": self.error,
         }
 
@@ -137,7 +141,7 @@ class DebugBrowserManager:
     def launch_browser(
         self,
         endpoint: str = DEFAULT_DEBUG_ENDPOINT,
-        start_url: str = "about:blank",
+        start_url: str = DEFAULT_BROWSER_HOME_URL,
     ) -> dict:
         endpoint = _normalize_endpoint(endpoint)
         _ensure_local_endpoint(endpoint)
@@ -168,7 +172,7 @@ class DebugBrowserManager:
             "--no-first-run",
             "--no-default-browser-check",
             "--new-window",
-            start_url.strip() or "about:blank",
+            start_url.strip() or DEFAULT_BROWSER_HOME_URL,
         ]
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         subprocess.Popen(
@@ -234,6 +238,7 @@ class DebugBrowserManager:
             after = _evaluate_media(session)
             network_items = _network_candidates(events)
         candidates = _merge_candidates(before, after, network_items)
+        candidates = self._validate_candidates(endpoint, tab, candidates)
         recommended = next((item for item in candidates if item["supported"]), None)
         if recommended is not None:
             recommended["recommended"] = True
@@ -244,6 +249,43 @@ class DebugBrowserManager:
             "recommended_url": recommended["url"] if recommended else "",
             "notes": _probe_notes(before, after, candidates),
         }
+
+    def _validate_candidates(self, endpoint: str, tab: dict, candidates: list[dict]) -> list[dict]:
+        if not candidates:
+            return []
+        workers = min(6, len(candidates))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="media-probe") as executor:
+            validated = list(
+                executor.map(lambda candidate: self._validate_candidate(endpoint, tab, dict(candidate)), candidates)
+            )
+        return sorted(
+            validated,
+            key=lambda item: (
+                0 if item.get("supported") else 1,
+                -(float(item.get("duration_seconds") or 0)),
+                -int(item.get("score") or 0),
+            ),
+        )
+
+    def _validate_candidate(self, endpoint: str, tab: dict, candidate: dict) -> dict:
+        url = str(candidate.get("url") or "")
+        try:
+            _validate_media_url(url)
+            headers = self._headers_for_media(endpoint, tab, url)
+            duration_seconds = _probe_remote_duration(url, headers)
+            candidate["duration_seconds"] = duration_seconds
+            candidate["supported"] = duration_seconds > 0
+            candidate["validation_status"] = "ok" if candidate["supported"] else "failed"
+            if candidate["supported"]:
+                candidate["reason"] = ""
+            else:
+                candidate["reason"] = "媒体源可访问但没有可用时长。"
+        except Exception as exc:
+            candidate["duration_seconds"] = 0
+            candidate["supported"] = False
+            candidate["validation_status"] = "failed"
+            candidate["reason"] = _short_error(exc)
+        return candidate
 
     def list_imports(self) -> list[dict]:
         with self._lock:
@@ -305,6 +347,7 @@ class DebugBrowserManager:
             tab = self._find_tab(record.endpoint, record.tab_id)
             headers = self._headers_for_media(record.endpoint, tab, record.source_url)
             self._extract_audio(record, headers)
+            duration_label = _duration_label(record.duration_seconds)
             options = self._options.get(import_id) or EngineOptions()
             formats = self._formats.get(import_id) or {"txt"}
             job = self.job_manager.submit(record.media_path, options, formats)
@@ -313,7 +356,12 @@ class DebugBrowserManager:
                 record.job_id = job.id
                 record.updated_at = iso_now()
                 record.events.append(
-                    BrowserImportEvent(at=record.updated_at, type="submitted", message="浏览器媒体已提交转写队列", progress=1)
+                    BrowserImportEvent(
+                        at=record.updated_at,
+                        type="submitted",
+                        message=f"浏览器媒体已提交转写队列，音频时长 {duration_label}",
+                        progress=1,
+                    )
                 )
         except Exception as exc:
             with self._lock:
@@ -398,10 +446,18 @@ class DebugBrowserManager:
             raise RuntimeError(message)
         if not record.media_path.exists() or record.media_path.stat().st_size == 0:
             raise RuntimeError("ffmpeg 没有生成可用的音频文件。")
+        duration_seconds = probe_duration(record.media_path)
+        duration_label = _duration_label(duration_seconds)
         with self._lock:
+            record.duration_seconds = duration_seconds
             record.updated_at = iso_now()
             record.events.append(
-                BrowserImportEvent(at=record.updated_at, type="extracted", message="原始媒体音频已提取", progress=0.7)
+                BrowserImportEvent(
+                    at=record.updated_at,
+                    type="extracted",
+                    message=f"原始媒体音频已提取，音频时长 {duration_label}",
+                    progress=0.7,
+                )
             )
 
 
@@ -568,9 +624,7 @@ def _merge_candidates(before: dict, after: dict, network_items: list[dict]) -> l
         if existing is None or candidate["score"] > existing["score"]:
             deduped[normalized_url] = candidate
     candidates = sorted(deduped.values(), key=lambda item: item["score"], reverse=True)
-    supported = [item for item in candidates if item["supported"]]
-    unsupported = [item for item in candidates if not item["supported"] and item["score"] >= 10]
-    return supported[:12] + unsupported[:4]
+    return candidates
 
 
 def _media_element_candidates(page: dict) -> list[dict]:
@@ -644,6 +698,8 @@ def _candidate_payload(item: dict, url: str) -> dict:
         "supported": supported,
         "recommended": False,
         "reason": reason,
+        "duration_seconds": 0,
+        "validation_status": "pending",
         "score": _candidate_score(url, item, supported),
     }
 
@@ -704,6 +760,56 @@ def _candidate_title(url: str) -> str:
     return name or urlparse(url).netloc or "media"
 
 
+def _probe_remote_duration(source_url: str, headers: dict[str, str]) -> float:
+    if which("ffprobe") is None:
+        raise RuntimeError("未找到 ffprobe，无法验证媒体源。")
+    header_text = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+    ]
+    if header_text:
+        cmd.extend(["-headers", header_text])
+    cmd.extend(
+        [
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            source_url,
+        ]
+    )
+    try:
+        completed = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("ffprobe 验证超时") from exc
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip() or "ffprobe 无法读取媒体源"
+        raise RuntimeError(message)
+    value = completed.stdout.strip()
+    try:
+        duration_seconds = float(value)
+    except ValueError as exc:
+        raise RuntimeError("ffprobe 没有返回可用时长") from exc
+    if not math.isfinite(duration_seconds) or duration_seconds <= 0:
+        raise RuntimeError("ffprobe 返回的媒体时长无效")
+    return duration_seconds
+
+
+def _short_error(error: Exception) -> str:
+    text = str(error).strip().replace("\r", " ").replace("\n", " ")
+    return text[:180] or error.__class__.__name__
+
+
 def _validate_media_url(source_url: str) -> None:
     parsed = urlparse(source_url)
     if parsed.scheme not in {"http", "https"}:
@@ -714,6 +820,10 @@ def _validate_media_url(source_url: str) -> None:
 
 def _probe_notes(before: dict, after: dict, candidates: list[dict]) -> list[str]:
     notes: list[str] = []
+    usable_count = sum(1 for item in candidates if item.get("supported"))
+    failed_count = sum(1 for item in candidates if item.get("validation_status") == "failed")
+    if candidates:
+        notes.append(f"已实际验证 {len(candidates)} 个媒体候选，可用 {usable_count} 个，失败 {failed_count} 个。")
     media = (after or before).get("media") or []
     if any(str(item.get("currentSrc") or "").startswith("blob:") for item in media):
         notes.append("页面媒体是 blob: 源；如果候选里没有 m3u8/mpd/mp4，请先刷新或重新播放后再探测。")
@@ -722,6 +832,18 @@ def _probe_notes(before: dict, after: dict, candidates: list[dict]) -> list[str]
     if not candidates:
         notes.append("没有发现可直接转写的媒体源。可刷新页面并延长监听时间，或回退系统音频采集。")
     return notes
+
+
+def _duration_label(duration_seconds: float | None) -> str:
+    if duration_seconds is None:
+        return "未知"
+    total = max(0, int(duration_seconds))
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    seconds = total % 60
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
 
 
 def iso_now() -> str:

@@ -116,7 +116,13 @@ http://127.0.0.1:8765
 chrome.exe --remote-debugging-port=9222 --user-data-dir="%TEMP%\easy-asr-chrome"
 ```
 
-如果命令不在 PATH 里，可以改用 Chrome/Edge 的完整路径。也可以在 Easy-ASR 的“调试浏览器”模式里点击“启动调试浏览器”，由后端自动打开独立调试浏览器。
+也可以直接指定启动首页，例如：
+
+```powershell
+chrome.exe --remote-debugging-port=9222 --user-data-dir="%TEMP%\easy-asr-chrome" https://www.bing.com
+```
+
+如果命令不在 PATH 里，可以改用 Chrome/Edge 的完整路径。也可以在 Easy-ASR 的“调试浏览器”模式里选择 Bing、百度或 Google，再点击“启动调试浏览器”，由后端自动打开独立调试浏览器。
 
 打开视频页面并开始播放后，在 Easy-ASR 页面里点击“标签页”，选择对应页面，再点击“监听媒体”。发现 `.m3u8`、`.mpd`、`.mp4`、`.m4a` 等候选源后，页面会自动选择最推荐的可转写源，确认后点击“原源转写”。
 

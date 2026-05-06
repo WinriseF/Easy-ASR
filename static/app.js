@@ -14,6 +14,8 @@ const state = {
 };
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const DEFAULT_BROWSER_HOME_URL = "https://www.bing.com";
+const uiSelects = new Map();
 
 const els = {
   serverStatus: document.getElementById("serverStatus"),
@@ -47,6 +49,7 @@ const els = {
   captureDurationText: document.getElementById("captureDurationText"),
   captureLevelFill: document.getElementById("captureLevelFill"),
   browserEndpointInput: document.getElementById("browserEndpointInput"),
+  browserHomeSelect: document.getElementById("browserHomeSelect"),
   browserTabSelect: document.getElementById("browserTabSelect"),
   launchBrowserButton: document.getElementById("launchBrowserButton"),
   refreshBrowserTabsButton: document.getElementById("refreshBrowserTabsButton"),
@@ -85,6 +88,137 @@ function log(message) {
   els.logOutput.textContent = `${new Date().toLocaleTimeString()} ${message}`;
 }
 
+function initUiSelects() {
+  for (const select of document.querySelectorAll("select")) {
+    createUiSelect(select);
+  }
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".ui-select")) {
+      closeUiSelects();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeUiSelects();
+    }
+  });
+}
+
+function createUiSelect(select) {
+  if (uiSelects.has(select)) {
+    return;
+  }
+  if (!select.id) {
+    select.id = `ui-native-select-${uiSelects.size + 1}`;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "ui-select";
+  wrapper.dataset.selectId = select.id;
+
+  const trigger = document.createElement("button");
+  trigger.className = "ui-select-trigger";
+  trigger.type = "button";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+
+  const value = document.createElement("span");
+  value.className = "ui-select-value";
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "m6 9 6 6 6-6");
+  icon.appendChild(path);
+
+  const menu = document.createElement("div");
+  menu.className = "ui-select-menu";
+  menu.setAttribute("role", "listbox");
+  menu.hidden = true;
+
+  trigger.append(value, icon);
+  wrapper.append(trigger, menu);
+  select.classList.add("native-select-hidden");
+  select.tabIndex = -1;
+  select.setAttribute("aria-hidden", "true");
+  select.insertAdjacentElement("afterend", wrapper);
+
+  trigger.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (select.disabled) {
+      return;
+    }
+    const willOpen = !wrapper.classList.contains("is-open");
+    closeUiSelects(wrapper);
+    setUiSelectOpen(select, willOpen);
+  });
+  select.addEventListener("change", () => syncUiSelect(select));
+
+  uiSelects.set(select, { wrapper, trigger, value, menu });
+  syncUiSelect(select);
+}
+
+function setUiSelectOpen(select, open) {
+  const control = uiSelects.get(select);
+  if (!control) {
+    return;
+  }
+  control.wrapper.classList.toggle("is-open", open);
+  control.trigger.setAttribute("aria-expanded", open ? "true" : "false");
+  control.menu.hidden = !open;
+}
+
+function closeUiSelects(exceptWrapper = null) {
+  for (const [select, control] of uiSelects) {
+    if (control.wrapper !== exceptWrapper) {
+      setUiSelectOpen(select, false);
+    }
+  }
+}
+
+function syncAllUiSelects() {
+  for (const select of uiSelects.keys()) {
+    syncUiSelect(select);
+  }
+}
+
+function syncUiSelect(select) {
+  const control = uiSelects.get(select);
+  if (!control) {
+    return;
+  }
+  const selected = select.selectedOptions[0] || select.options[0] || null;
+  const label = selected?.textContent?.trim() || "请选择";
+  control.value.textContent = label;
+  control.value.classList.toggle("is-placeholder", !selected || !selected.value);
+  control.trigger.disabled = select.disabled;
+  control.trigger.title = label;
+  control.trigger.setAttribute("aria-label", select.getAttribute("aria-label") || label);
+  control.wrapper.classList.toggle("is-disabled", select.disabled);
+  control.menu.innerHTML = "";
+
+  for (const option of select.options) {
+    const item = document.createElement("button");
+    item.className = "ui-select-option";
+    item.type = "button";
+    item.disabled = option.disabled;
+    item.dataset.value = option.value;
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", option.selected ? "true" : "false");
+    item.classList.toggle("is-selected", option.selected);
+    item.textContent = option.textContent;
+    item.addEventListener("click", () => {
+      if (option.disabled) {
+        return;
+      }
+      select.value = option.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      closeUiSelects();
+    });
+    control.menu.appendChild(item);
+  }
+}
+
 async function loadAll() {
   const [health, models, files, terms, jobs, captureDevices] = await Promise.all([
     api("/api/health"),
@@ -112,6 +246,7 @@ async function loadAll() {
   renderBrowserCandidates(state.browserCandidates);
   renderTerminology(terms.terms);
   renderQueue();
+  syncAllUiSelects();
   if (!state.activeJob && state.jobs.length) {
     setActiveJob(state.jobs[0].id);
   }
@@ -135,6 +270,7 @@ function renderModels() {
     els.engineSelect.value = firstAvailable.id;
   }
   updateModelNote();
+  syncUiSelect(els.engineSelect);
 }
 
 function updateModelNote() {
@@ -157,6 +293,7 @@ function renderFiles() {
     els.existingFileSelect.appendChild(option);
   }
   els.existingFileSelect.value = current;
+  syncUiSelect(els.existingFileSelect);
 }
 
 function renderCaptureDevices(payload) {
@@ -168,6 +305,7 @@ function renderCaptureDevices(payload) {
     option.textContent = payload.install_hint || "系统音频采集未安装";
     els.captureDeviceSelect.appendChild(option);
     els.startCaptureButton.disabled = true;
+    syncUiSelect(els.captureDeviceSelect);
     return;
   }
   for (const device of payload.devices || []) {
@@ -185,6 +323,7 @@ function renderCaptureDevices(payload) {
   els.captureDeviceSelect.value = current || (payload.devices?.find((item) => item.is_default)?.index ?? "");
   els.startCaptureButton.disabled =
     Boolean(state.activeCapture && state.activeCapture.status === "recording") || !state.captureDevices.length;
+  syncUiSelect(els.captureDeviceSelect);
 }
 
 function renderBrowserTabs(payload) {
@@ -199,6 +338,7 @@ function renderBrowserTabs(payload) {
     els.browserTabSelect.appendChild(option);
     els.probeBrowserButton.disabled = true;
     els.browserStatusText.textContent = "未连接";
+    syncUiSelect(els.browserTabSelect);
     return;
   }
   if (!tabs.length) {
@@ -208,6 +348,7 @@ function renderBrowserTabs(payload) {
     els.browserTabSelect.appendChild(option);
     els.probeBrowserButton.disabled = true;
     els.browserStatusText.textContent = "未发现标签页";
+    syncUiSelect(els.browserTabSelect);
     return;
   }
   for (const tab of tabs) {
@@ -219,6 +360,7 @@ function renderBrowserTabs(payload) {
   els.browserTabSelect.value = tabs.some((tab) => tab.id === current) ? current : tabs[0].id;
   els.probeBrowserButton.disabled = false;
   els.browserStatusText.textContent = `${tabs.length} 个标签页`;
+  syncUiSelect(els.browserTabSelect);
 }
 
 function renderBrowserCandidates(candidates = [], notes = []) {
@@ -233,23 +375,32 @@ function renderBrowserCandidates(candidates = [], notes = []) {
     if (notes.length) {
       els.browserStatusText.textContent = notes[0];
     }
+    syncUiSelect(els.browserCandidateSelect);
     return;
   }
   for (const candidate of candidates) {
     const option = document.createElement("option");
     option.value = candidate.url;
     option.disabled = !candidate.supported;
-    const prefix = candidate.recommended ? "推荐 · " : (candidate.supported ? "" : "不可用 · ");
-    option.textContent = `${prefix}${candidate.source} · ${candidate.title || candidate.url}`;
+    const duration = formatCandidateDuration(candidate.duration_seconds);
+    const stateText = candidate.supported ? (candidate.recommended ? "推荐" : "可用") : "失败";
+    option.textContent = `${duration} · ${stateText} · ${candidate.source} · ${candidate.title || candidate.url}`;
     option.dataset.reason = candidate.reason || "";
     els.browserCandidateSelect.appendChild(option);
   }
   const firstSupported = candidates.find((candidate) => candidate.recommended) || candidates.find((candidate) => candidate.supported);
   els.browserCandidateSelect.value = firstSupported ? firstSupported.url : "";
   els.transcribeBrowserButton.disabled = !firstSupported;
+  const usableCount = candidates.filter((candidate) => candidate.supported).length;
   els.browserStatusText.textContent = firstSupported
-    ? `已自动选择推荐源`
+    ? `可用 ${usableCount} 个，已选择 ${formatCandidateDuration(firstSupported.duration_seconds)}`
     : (notes[0] || "没有可直接转写的媒体源");
+  syncUiSelect(els.browserCandidateSelect);
+}
+
+function formatCandidateDuration(value) {
+  const seconds = Number(value) || 0;
+  return seconds > 0 ? formatTime(seconds) : "0s";
 }
 
 function updateBrowserCandidateState() {
@@ -277,10 +428,18 @@ function renderQueue() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "queue-item";
-    button.innerHTML = `<strong>${escapeHtml(job.source_name)}</strong><span>${job.status} · ${Math.round(job.progress * 100)}%</span>`;
+    button.innerHTML = `<strong>${escapeHtml(job.source_name)}</strong><span>${escapeHtml(jobQueueMeta(job))}</span>`;
     button.addEventListener("click", () => setActiveJob(job.id));
     els.jobQueue.appendChild(button);
   }
+}
+
+function jobQueueMeta(job) {
+  const parts = [job.status, `${Math.round(job.progress * 100)}%`];
+  if (job.duration_seconds) {
+    parts.push(formatTime(job.duration_seconds));
+  }
+  return parts.join(" · ");
 }
 
 async function refreshJobs({ detail = false } = {}) {
@@ -532,7 +691,7 @@ async function launchDebugBrowser() {
   try {
     const form = new FormData();
     form.append("endpoint", els.browserEndpointInput.value.trim());
-    form.append("start_url", "about:blank");
+    form.append("start_url", els.browserHomeSelect?.value || DEFAULT_BROWSER_HOME_URL);
     const payload = await api("/api/browser/launch", { method: "POST", body: form });
     if (payload.endpoint) {
       els.browserEndpointInput.value = payload.endpoint;
@@ -571,7 +730,7 @@ async function probeBrowserMedia() {
   }
   els.probeBrowserButton.disabled = true;
   els.transcribeBrowserButton.disabled = true;
-  els.browserStatusText.textContent = "探测中";
+  els.browserStatusText.textContent = "探测并验证中";
   try {
     const form = new FormData();
     form.append("endpoint", els.browserEndpointInput.value.trim());
@@ -617,10 +776,10 @@ async function transcribeBrowserMedia() {
 async function refreshBrowserImport(importId) {
   const record = await api(`/api/browser/imports/${importId}`);
   state.activeBrowserImport = record;
-  els.browserStatusText.textContent = record.status;
+  els.browserStatusText.textContent = browserImportStatusText(record);
   if (record.status === "submitted" && record.job_id) {
     state.activeBrowserImport = null;
-    log("浏览器媒体已提交转写队列");
+    log(`浏览器媒体已提交转写队列${record.duration_seconds ? `，音频时长 ${formatTime(record.duration_seconds)}` : ""}`);
     await refreshJobs();
     await setActiveJob(record.job_id);
   } else if (record.status === "failed") {
@@ -628,6 +787,20 @@ async function refreshBrowserImport(importId) {
     els.transcribeBrowserButton.disabled = !els.browserCandidateSelect.value;
     log(`浏览器媒体提取失败: ${record.error}`);
   }
+}
+
+function browserImportStatusText(record) {
+  const duration = record?.duration_seconds ? formatTime(record.duration_seconds) : "";
+  if (record.status === "extracting") {
+    return duration ? `提取中 ${duration}` : "提取中";
+  }
+  if (record.status === "submitted") {
+    return duration ? `已提交 ${duration}` : "已提交";
+  }
+  if (record.status === "failed") {
+    return "失败";
+  }
+  return record.status || "未连接";
 }
 
 function appendTranscriptionOptions(form) {
@@ -751,6 +924,7 @@ function cleanError(error) {
   }
 }
 
+initUiSelects();
 bindEvents();
 loadAll().catch((error) => log(`初始化失败: ${cleanError(error)}`));
 setInterval(refreshJobs, 5000);

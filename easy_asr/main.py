@@ -8,7 +8,11 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from easy_asr.browser_debug import DEFAULT_DEBUG_ENDPOINT, DebugBrowserManager
+from easy_asr.browser_debug import (
+    DEFAULT_BROWSER_HOME_URL,
+    DEFAULT_DEBUG_ENDPOINT,
+    DebugBrowserManager,
+)
 from easy_asr.capture import PlaybackCaptureManager
 from easy_asr.engines.base import EngineOptions
 from easy_asr.jobs import JobManager, event_payload, parse_formats
@@ -171,7 +175,7 @@ def probe_browser(
 @app.post("/api/browser/launch")
 def launch_browser(
     endpoint: Annotated[str, Form()] = DEFAULT_DEBUG_ENDPOINT,
-    start_url: Annotated[str, Form()] = "about:blank",
+    start_url: Annotated[str, Form()] = DEFAULT_BROWSER_HOME_URL,
 ) -> dict:
     try:
         return browser_manager.launch_browser(endpoint=endpoint, start_url=start_url)

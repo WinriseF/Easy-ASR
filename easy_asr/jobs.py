@@ -134,6 +134,7 @@ class JobManager:
         job_id = uuid.uuid4().hex[:12]
         now = iso_now()
         options.work_dir = self.work_root / job_id
+        duration_seconds = probe_duration(input_path)
         record = JobRecord(
             id=job_id,
             source_name=input_path.name,
@@ -145,9 +146,13 @@ class JobManager:
             created_at=now,
             updated_at=now,
             output_dir=self.output_root / job_id,
+            duration_seconds=duration_seconds,
             hidden=hidden,
         )
-        record.events.append(JobEvent(at=now, type="queued", message="任务已加入队列", progress=0))
+        queued_message = "任务已加入队列"
+        if duration_seconds is not None:
+            queued_message = f"{queued_message}，音频时长 {_duration_label(duration_seconds)}"
+        record.events.append(JobEvent(at=now, type="queued", message=queued_message, progress=0))
         with self._lock:
             self._jobs[job_id] = record
         self._executor.submit(self._run, job_id)
@@ -242,6 +247,16 @@ def sanitize_filename(filename: str) -> str:
 
 def short_timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _duration_label(duration_seconds: float) -> str:
+    total = max(0, int(duration_seconds))
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    seconds = total % 60
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
 
 
 def iso_now() -> str:

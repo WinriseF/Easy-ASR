@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Easy-ASR</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260506-ui3" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260506-ui5" />
   </head>
   <body>
     <div class="app-shell">
@@ -44,7 +44,7 @@
 
       <main class="workspace">
         <header class="topbar">
-          <div>
+          <div class="topbar-title">
             <div class="status-kicker" id="serverStatus">检查服务</div>
             <h2>语音转写工作台</h2>
           </div>
@@ -148,6 +148,14 @@
               <label class="field">
                 <span>调试端口</span>
                 <input id="browserEndpointInput" type="text" value="http://127.0.0.1:9222" />
+              </label>
+              <label class="field">
+                <span>启动首页</span>
+                <select id="browserHomeSelect" aria-label="启动首页">
+                  <option value="https://www.bing.com" selected>Bing</option>
+                  <option value="https://www.baidu.com">百度</option>
+                  <option value="https://www.google.com">Google</option>
+                </select>
               </label>
               <label class="field">
                 <span>标签页</span>
