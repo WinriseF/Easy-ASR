@@ -46,6 +46,7 @@ class JobRecord:
     segments: list[dict] = field(default_factory=list)
     duration_seconds: float | None = None
     error: str = ""
+    hidden: bool = False
     events: list[JobEvent] = field(default_factory=list)
 
     def snapshot(self) -> dict:
@@ -129,7 +130,7 @@ class JobManager:
             raise ValueError("不支持的文件类型。")
         return candidate
 
-    def submit(self, input_path: Path, options: EngineOptions, formats: set[str]) -> JobRecord:
+    def submit(self, input_path: Path, options: EngineOptions, formats: set[str], hidden: bool = False) -> JobRecord:
         job_id = uuid.uuid4().hex[:12]
         now = iso_now()
         options.work_dir = self.work_root / job_id
@@ -144,6 +145,7 @@ class JobManager:
             created_at=now,
             updated_at=now,
             output_dir=self.output_root / job_id,
+            hidden=hidden,
         )
         record.events.append(JobEvent(at=now, type="queued", message="任务已加入队列", progress=0))
         with self._lock:
@@ -153,7 +155,11 @@ class JobManager:
 
     def list_jobs(self) -> list[dict]:
         with self._lock:
-            return [job.summary() for job in sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True)]
+            return [
+                job.summary()
+                for job in sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True)
+                if not job.hidden
+            ]
 
     def get_job(self, job_id: str) -> JobRecord | None:
         with self._lock:

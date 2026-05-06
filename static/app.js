@@ -2,8 +2,15 @@ const state = {
   models: [],
   files: [],
   jobs: [],
+  captureDevices: [],
+  browserTabs: [],
+  browserCandidates: [],
+  sourceMode: "browser",
   activeJob: null,
+  activeCapture: null,
+  activeBrowserImport: null,
   eventSource: null,
+  captureEventSource: null,
 };
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
@@ -30,6 +37,25 @@ const els = {
   downloadRow: document.getElementById("downloadRow"),
   segmentTable: document.getElementById("segmentTable"),
   copyTranscriptButton: document.getElementById("copyTranscriptButton"),
+  sourcePanelTitle: document.getElementById("sourcePanelTitle"),
+  sourceModeButtons: document.querySelectorAll(".source-mode-button"),
+  sourcePanes: document.querySelectorAll(".source-pane"),
+  captureDeviceSelect: document.getElementById("captureDeviceSelect"),
+  startCaptureButton: document.getElementById("startCaptureButton"),
+  stopCaptureButton: document.getElementById("stopCaptureButton"),
+  captureStatusText: document.getElementById("captureStatusText"),
+  captureDurationText: document.getElementById("captureDurationText"),
+  captureLevelFill: document.getElementById("captureLevelFill"),
+  browserEndpointInput: document.getElementById("browserEndpointInput"),
+  browserTabSelect: document.getElementById("browserTabSelect"),
+  launchBrowserButton: document.getElementById("launchBrowserButton"),
+  refreshBrowserTabsButton: document.getElementById("refreshBrowserTabsButton"),
+  probeBrowserButton: document.getElementById("probeBrowserButton"),
+  browserReloadInput: document.getElementById("browserReloadInput"),
+  browserListenSecondsInput: document.getElementById("browserListenSecondsInput"),
+  browserCandidateSelect: document.getElementById("browserCandidateSelect"),
+  transcribeBrowserButton: document.getElementById("transcribeBrowserButton"),
+  browserStatusText: document.getElementById("browserStatusText"),
   engineSelect: document.getElementById("engineSelect"),
   modelNameInput: document.getElementById("modelNameInput"),
   languageSelect: document.getElementById("languageSelect"),
@@ -60,20 +86,30 @@ function log(message) {
 }
 
 async function loadAll() {
-  const [health, models, files, terms, jobs] = await Promise.all([
+  const [health, models, files, terms, jobs, captureDevices] = await Promise.all([
     api("/api/health"),
     api("/api/models"),
     api("/api/files"),
     api("/api/terminology"),
     api("/api/jobs"),
+    api("/api/capture/devices").catch((error) => ({
+      available: false,
+      devices: [],
+      install_hint: cleanError(error),
+    })),
   ]);
   els.serverStatus.textContent = health.ok ? "本地服务运行中" : "服务异常";
   state.models = models.models;
   state.files = files.files;
   state.jobs = jobs.jobs;
+  state.captureDevices = captureDevices.devices || [];
   renderCounts();
   renderModels();
   renderFiles();
+  renderSourceMode();
+  renderCaptureDevices(captureDevices);
+  renderBrowserTabs({ available: true, tabs: state.browserTabs });
+  renderBrowserCandidates(state.browserCandidates);
   renderTerminology(terms.terms);
   renderQueue();
   if (!state.activeJob && state.jobs.length) {
@@ -121,6 +157,107 @@ function renderFiles() {
     els.existingFileSelect.appendChild(option);
   }
   els.existingFileSelect.value = current;
+}
+
+function renderCaptureDevices(payload) {
+  const current = els.captureDeviceSelect.value;
+  els.captureDeviceSelect.innerHTML = "";
+  if (!payload.available) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = payload.install_hint || "系统音频采集未安装";
+    els.captureDeviceSelect.appendChild(option);
+    els.startCaptureButton.disabled = true;
+    return;
+  }
+  for (const device of payload.devices || []) {
+    const option = document.createElement("option");
+    option.value = String(device.index);
+    option.textContent = `${device.name}${device.is_default ? " · 默认" : ""}`;
+    els.captureDeviceSelect.appendChild(option);
+  }
+  if (!els.captureDeviceSelect.options.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "未找到播放输出设备";
+    els.captureDeviceSelect.appendChild(option);
+  }
+  els.captureDeviceSelect.value = current || (payload.devices?.find((item) => item.is_default)?.index ?? "");
+  els.startCaptureButton.disabled =
+    Boolean(state.activeCapture && state.activeCapture.status === "recording") || !state.captureDevices.length;
+}
+
+function renderBrowserTabs(payload) {
+  const current = els.browserTabSelect.value;
+  els.browserTabSelect.innerHTML = "";
+  const tabs = payload.tabs || [];
+  state.browserTabs = tabs;
+  if (!payload.available) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = payload.install_hint || "调试浏览器不可用";
+    els.browserTabSelect.appendChild(option);
+    els.probeBrowserButton.disabled = true;
+    els.browserStatusText.textContent = "未连接";
+    return;
+  }
+  if (!tabs.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "点击标签页连接调试浏览器";
+    els.browserTabSelect.appendChild(option);
+    els.probeBrowserButton.disabled = true;
+    els.browserStatusText.textContent = "未发现标签页";
+    return;
+  }
+  for (const tab of tabs) {
+    const option = document.createElement("option");
+    option.value = tab.id;
+    option.textContent = tab.title || tab.url || tab.id;
+    els.browserTabSelect.appendChild(option);
+  }
+  els.browserTabSelect.value = tabs.some((tab) => tab.id === current) ? current : tabs[0].id;
+  els.probeBrowserButton.disabled = false;
+  els.browserStatusText.textContent = `${tabs.length} 个标签页`;
+}
+
+function renderBrowserCandidates(candidates = [], notes = []) {
+  els.browserCandidateSelect.innerHTML = "";
+  state.browserCandidates = candidates;
+  if (!candidates.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "先探测媒体源";
+    els.browserCandidateSelect.appendChild(option);
+    els.transcribeBrowserButton.disabled = true;
+    if (notes.length) {
+      els.browserStatusText.textContent = notes[0];
+    }
+    return;
+  }
+  for (const candidate of candidates) {
+    const option = document.createElement("option");
+    option.value = candidate.url;
+    option.disabled = !candidate.supported;
+    const prefix = candidate.recommended ? "推荐 · " : (candidate.supported ? "" : "不可用 · ");
+    option.textContent = `${prefix}${candidate.source} · ${candidate.title || candidate.url}`;
+    option.dataset.reason = candidate.reason || "";
+    els.browserCandidateSelect.appendChild(option);
+  }
+  const firstSupported = candidates.find((candidate) => candidate.recommended) || candidates.find((candidate) => candidate.supported);
+  els.browserCandidateSelect.value = firstSupported ? firstSupported.url : "";
+  els.transcribeBrowserButton.disabled = !firstSupported;
+  els.browserStatusText.textContent = firstSupported
+    ? `已自动选择推荐源`
+    : (notes[0] || "没有可直接转写的媒体源");
+}
+
+function updateBrowserCandidateState() {
+  const candidate = state.browserCandidates.find((item) => item.url === els.browserCandidateSelect.value);
+  els.transcribeBrowserButton.disabled = !candidate || !candidate.supported;
+  if (candidate?.reason) {
+    els.browserStatusText.textContent = candidate.reason;
+  }
 }
 
 function renderTerminology(terms) {
@@ -171,6 +308,23 @@ function renderCounts() {
   els.fileCountText.textContent = String(state.files.length);
 }
 
+function setSourceMode(mode) {
+  state.sourceMode = mode === "capture" ? "capture" : "browser";
+  renderSourceMode();
+}
+
+function renderSourceMode() {
+  for (const button of els.sourceModeButtons) {
+    const active = button.dataset.sourceMode === state.sourceMode;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  for (const pane of els.sourcePanes) {
+    pane.hidden = pane.dataset.sourcePane !== state.sourceMode;
+  }
+  els.sourcePanelTitle.textContent = state.sourceMode === "browser" ? "调试浏览器" : "系统播放";
+}
+
 async function setActiveJob(jobId) {
   const job = await api(`/api/jobs/${jobId}`);
   state.activeJob = job;
@@ -201,6 +355,36 @@ function renderActiveJob(job, { includeSegments = true } = {}) {
     renderDownloads(job);
     renderSegments(job.segments || []);
   }
+}
+
+function renderCapture(capture) {
+  state.activeCapture = capture;
+  const status = capture?.status || "idle";
+  const recording = status === "recording" || status === "starting" || status === "stopping";
+  els.captureStatusText.textContent = status === "idle" ? "未开始" : status;
+  els.captureDurationText.textContent = formatTime(capture?.duration_seconds || 0);
+  els.captureLevelFill.style.width = `${Math.round((capture?.level || 0) * 100)}%`;
+  els.startCaptureButton.disabled = recording || !state.captureDevices.length;
+  els.stopCaptureButton.disabled = !recording;
+  if (capture && (recording || status === "transcribing" || status === "completed" || capture.live_segments?.length)) {
+    renderLiveCaptureTranscript(capture);
+  }
+}
+
+function renderLiveCaptureTranscript(capture) {
+  const terminal = capture.status === "completed" || capture.status === "failed";
+  const liveJob = {
+    id: `capture:${capture.id}`,
+    source_name: "系统播放实时转写",
+    status: capture.status,
+    progress: terminal ? 1 : 0,
+    duration_seconds: capture.duration_seconds,
+    engine_id: "live-capture",
+    outputs: {},
+    segments: capture.live_segments || [],
+  };
+  state.activeJob = liveJob;
+  renderActiveJob(liveJob);
 }
 
 function renderDownloads(job) {
@@ -266,17 +450,7 @@ async function submitJob() {
     } else {
       form.append("existing_file", els.existingFileSelect.value);
     }
-    form.append("engine_id", els.engineSelect.value);
-    form.append("model_name", els.modelNameInput.value.trim());
-    form.append("language", els.languageSelect.value);
-    form.append("chunk_seconds", els.chunkSecondsInput.value);
-    form.append("batch_size_s", els.batchSizeInput.value);
-    form.append("merge_length_s", els.mergeLengthInput.value);
-    form.append("cpu_threads", els.cpuThreadsInput.value);
-    form.append("compute_type", els.computeTypeSelect.value);
-    form.append("whisper_preset", els.whisperPresetSelect.value);
-    form.append("apply_terminology", els.applyTerminologyInput.checked ? "true" : "false");
-    form.append("output_formats", selectedFormats().join(","));
+    appendTranscriptionOptions(form);
     const job = await api("/api/jobs", { method: "POST", body: form });
     await refreshJobs();
     await setActiveJob(job.id);
@@ -286,6 +460,188 @@ async function submitJob() {
   } finally {
     els.startButton.disabled = false;
   }
+}
+
+async function startCapture() {
+  els.startCaptureButton.disabled = true;
+  try {
+    const form = new FormData();
+    form.append("device_index", els.captureDeviceSelect.value);
+    appendTranscriptionOptions(form);
+    const capture = await api("/api/capture/start", { method: "POST", body: form });
+    renderCapture(capture);
+    watchCapture(capture.id);
+    log("系统音频采集已开始");
+  } catch (error) {
+    log(`系统音频采集失败: ${cleanError(error)}`);
+    els.startCaptureButton.disabled = !state.captureDevices.length;
+  }
+}
+
+async function stopCapture() {
+  const captureId = state.activeCapture?.id;
+  if (!captureId) {
+    return;
+  }
+  els.stopCaptureButton.disabled = true;
+  try {
+    const capture = await api(`/api/capture/${captureId}/stop`, { method: "POST" });
+    renderCapture(capture);
+    closeCaptureEvents();
+    log("系统音频采集已停止，剩余切片会继续转写");
+  } catch (error) {
+    log(`停止采集失败: ${cleanError(error)}`);
+    els.stopCaptureButton.disabled = false;
+  }
+}
+
+async function refreshCapture(captureId) {
+  if (!captureId) {
+    return;
+  }
+  const capture = await api(`/api/capture/${captureId}`);
+  renderCapture(capture);
+}
+
+function watchCapture(captureId) {
+  closeCaptureEvents();
+  state.captureEventSource = new EventSource(`/api/capture/${captureId}/events`);
+  state.captureEventSource.onmessage = async (event) => {
+    const payload = JSON.parse(event.data);
+    log(payload.message);
+    await refreshCapture(captureId);
+    if (TERMINAL_STATUSES.has(payload.type) || payload.type === "completed" || payload.type === "failed") {
+      closeCaptureEvents();
+    }
+  };
+  state.captureEventSource.onerror = () => {
+    closeCaptureEvents();
+  };
+}
+
+function closeCaptureEvents() {
+  if (state.captureEventSource) {
+    state.captureEventSource.close();
+    state.captureEventSource = null;
+  }
+}
+
+async function launchDebugBrowser() {
+  els.launchBrowserButton.disabled = true;
+  els.browserStatusText.textContent = "启动中";
+  try {
+    const form = new FormData();
+    form.append("endpoint", els.browserEndpointInput.value.trim());
+    form.append("start_url", "about:blank");
+    const payload = await api("/api/browser/launch", { method: "POST", body: form });
+    if (payload.endpoint) {
+      els.browserEndpointInput.value = payload.endpoint;
+    }
+    renderBrowserTabs({ available: true, tabs: payload.tabs || [] });
+    log(payload.already_running ? "调试浏览器已在运行" : "调试浏览器已启动");
+  } catch (error) {
+    renderBrowserTabs({ available: false, install_hint: cleanError(error), tabs: [] });
+    log(`调试浏览器启动失败: ${cleanError(error)}`);
+  } finally {
+    els.launchBrowserButton.disabled = false;
+  }
+}
+
+async function loadBrowserTabs() {
+  els.refreshBrowserTabsButton.disabled = true;
+  els.browserStatusText.textContent = "连接中";
+  try {
+    const endpoint = encodeURIComponent(els.browserEndpointInput.value.trim());
+    const payload = await api(`/api/browser/tabs?endpoint=${endpoint}`);
+    renderBrowserTabs(payload);
+    log(payload.available ? `发现 ${payload.tabs.length} 个调试浏览器标签页` : `调试浏览器不可用: ${payload.install_hint}`);
+  } catch (error) {
+    renderBrowserTabs({ available: false, install_hint: cleanError(error), tabs: [] });
+    log(`调试浏览器连接失败: ${cleanError(error)}`);
+  } finally {
+    els.refreshBrowserTabsButton.disabled = false;
+  }
+}
+
+async function probeBrowserMedia() {
+  const tabId = els.browserTabSelect.value;
+  if (!tabId) {
+    log("请先选择调试浏览器标签页");
+    return;
+  }
+  els.probeBrowserButton.disabled = true;
+  els.transcribeBrowserButton.disabled = true;
+  els.browserStatusText.textContent = "探测中";
+  try {
+    const form = new FormData();
+    form.append("endpoint", els.browserEndpointInput.value.trim());
+    form.append("tab_id", tabId);
+    form.append("listen_seconds", els.browserListenSecondsInput.value);
+    form.append("reload_page", els.browserReloadInput.checked ? "true" : "false");
+    const payload = await api("/api/browser/probe", { method: "POST", body: form });
+    renderBrowserCandidates(payload.candidates || [], payload.notes || []);
+    const note = (payload.notes || [])[0];
+    log(note || (payload.recommended_url ? "已自动选择推荐媒体源" : `发现 ${payload.candidates.length} 个浏览器媒体候选`));
+  } catch (error) {
+    renderBrowserCandidates([], [cleanError(error)]);
+    log(`浏览器媒体探测失败: ${cleanError(error)}`);
+  } finally {
+    els.probeBrowserButton.disabled = !els.browserTabSelect.value;
+  }
+}
+
+async function transcribeBrowserMedia() {
+  const sourceUrl = els.browserCandidateSelect.value;
+  if (!sourceUrl) {
+    log("没有可提交的浏览器媒体源");
+    return;
+  }
+  els.transcribeBrowserButton.disabled = true;
+  els.browserStatusText.textContent = "提取中";
+  try {
+    const form = new FormData();
+    form.append("endpoint", els.browserEndpointInput.value.trim());
+    form.append("tab_id", els.browserTabSelect.value);
+    form.append("source_url", sourceUrl);
+    appendTranscriptionOptions(form);
+    const record = await api("/api/browser/transcribe", { method: "POST", body: form });
+    state.activeBrowserImport = record;
+    log("浏览器原始媒体正在提取");
+  } catch (error) {
+    els.browserStatusText.textContent = "提交失败";
+    els.transcribeBrowserButton.disabled = false;
+    log(`浏览器原源转写失败: ${cleanError(error)}`);
+  }
+}
+
+async function refreshBrowserImport(importId) {
+  const record = await api(`/api/browser/imports/${importId}`);
+  state.activeBrowserImport = record;
+  els.browserStatusText.textContent = record.status;
+  if (record.status === "submitted" && record.job_id) {
+    state.activeBrowserImport = null;
+    log("浏览器媒体已提交转写队列");
+    await refreshJobs();
+    await setActiveJob(record.job_id);
+  } else if (record.status === "failed") {
+    state.activeBrowserImport = null;
+    els.transcribeBrowserButton.disabled = !els.browserCandidateSelect.value;
+    log(`浏览器媒体提取失败: ${record.error}`);
+  }
+}
+
+function appendTranscriptionOptions(form) {
+  form.append("engine_id", els.engineSelect.value);
+  form.append("model_name", els.modelNameInput.value.trim());
+  form.append("language", els.languageSelect.value);
+  form.append("chunk_seconds", els.chunkSecondsInput.value);
+  form.append("batch_size_s", els.batchSizeInput.value);
+  form.append("merge_length_s", els.mergeLengthInput.value);
+  form.append("cpu_threads", els.cpuThreadsInput.value);
+  form.append("compute_type", els.computeTypeSelect.value);
+  form.append("whisper_preset", els.whisperPresetSelect.value);
+  form.append("apply_terminology", els.applyTerminologyInput.checked ? "true" : "false");
+  form.append("output_formats", selectedFormats().join(","));
 }
 
 function selectedFormats() {
@@ -321,6 +677,16 @@ async function copyTranscript() {
 
 function bindEvents() {
   els.startButton.addEventListener("click", submitJob);
+  for (const button of els.sourceModeButtons) {
+    button.addEventListener("click", () => setSourceMode(button.dataset.sourceMode));
+  }
+  els.startCaptureButton.addEventListener("click", startCapture);
+  els.stopCaptureButton.addEventListener("click", stopCapture);
+  els.launchBrowserButton.addEventListener("click", launchDebugBrowser);
+  els.refreshBrowserTabsButton.addEventListener("click", loadBrowserTabs);
+  els.probeBrowserButton.addEventListener("click", probeBrowserMedia);
+  els.transcribeBrowserButton.addEventListener("click", transcribeBrowserMedia);
+  els.browserCandidateSelect.addEventListener("change", updateBrowserCandidateState);
   els.reloadButton.addEventListener("click", loadAll);
   els.refreshFilesButton.addEventListener("click", loadAll);
   els.engineSelect.addEventListener("change", updateModelNote);
@@ -388,3 +754,16 @@ function cleanError(error) {
 bindEvents();
 loadAll().catch((error) => log(`初始化失败: ${cleanError(error)}`));
 setInterval(refreshJobs, 5000);
+setInterval(() => {
+  if (
+    state.activeCapture &&
+    ["starting", "recording", "stopping", "transcribing"].includes(state.activeCapture.status)
+  ) {
+    refreshCapture(state.activeCapture.id).catch(() => {});
+  }
+}, 2000);
+setInterval(() => {
+  if (state.activeBrowserImport && state.activeBrowserImport.status === "extracting") {
+    refreshBrowserImport(state.activeBrowserImport.id).catch(() => {});
+  }
+}, 2000);

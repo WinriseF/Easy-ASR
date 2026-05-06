@@ -8,6 +8,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from easy_asr.browser_debug import DEFAULT_DEBUG_ENDPOINT, DebugBrowserManager
+from easy_asr.capture import PlaybackCaptureManager
 from easy_asr.engines.base import EngineOptions
 from easy_asr.jobs import JobManager, event_payload, parse_formats
 
@@ -17,6 +19,10 @@ STATIC_DIR = BASE_DIR / "static"
 
 manager = JobManager(BASE_DIR)
 manager.ensure_dirs()
+capture_manager = PlaybackCaptureManager(BASE_DIR, manager)
+capture_manager.ensure_dirs()
+browser_manager = DebugBrowserManager(BASE_DIR, manager)
+browser_manager.ensure_dirs()
 
 app = FastAPI(title="Easy-ASR", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -50,6 +56,45 @@ def files() -> dict:
 @app.get("/api/jobs")
 def jobs() -> dict:
     return {"jobs": manager.list_jobs()}
+
+
+@app.get("/api/capture/devices")
+def capture_devices() -> dict:
+    return capture_manager.devices_payload()
+
+
+@app.get("/api/capture/sessions")
+def capture_sessions() -> dict:
+    return {"sessions": capture_manager.list_sessions()}
+
+
+@app.get("/api/capture/{session_id}")
+def capture_session(session_id: str) -> dict:
+    record = capture_manager.get_session(session_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="capture session not found")
+    return record.snapshot()
+
+
+@app.get("/api/browser/tabs")
+def browser_tabs(endpoint: str = DEFAULT_DEBUG_ENDPOINT) -> dict:
+    try:
+        return {"available": True, "install_hint": "", "tabs": browser_manager.list_tabs(endpoint)}
+    except Exception as exc:
+        return {"available": False, "install_hint": str(exc), "tabs": []}
+
+
+@app.get("/api/browser/imports")
+def browser_imports() -> dict:
+    return {"imports": browser_manager.list_imports()}
+
+
+@app.get("/api/browser/imports/{import_id}")
+def browser_import(import_id: str) -> dict:
+    record = browser_manager.get_import(import_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="browser import not found")
+    return record.snapshot()
 
 
 @app.get("/api/jobs/{job_id}")
@@ -103,6 +148,139 @@ def create_job(
     finally:
         if file is not None:
             file.file.close()
+
+
+@app.post("/api/browser/probe")
+def probe_browser(
+    endpoint: Annotated[str, Form()] = DEFAULT_DEBUG_ENDPOINT,
+    tab_id: Annotated[str, Form()] = "",
+    listen_seconds: Annotated[int, Form()] = 4,
+    reload_page: Annotated[bool, Form()] = False,
+) -> dict:
+    try:
+        return browser_manager.probe_tab(
+            endpoint=endpoint,
+            tab_id=tab_id,
+            listen_seconds=max(1, min(int(listen_seconds), 15)),
+            reload_page=reload_page,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/browser/launch")
+def launch_browser(
+    endpoint: Annotated[str, Form()] = DEFAULT_DEBUG_ENDPOINT,
+    start_url: Annotated[str, Form()] = "about:blank",
+) -> dict:
+    try:
+        return browser_manager.launch_browser(endpoint=endpoint, start_url=start_url)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/browser/transcribe")
+def transcribe_browser(
+    endpoint: Annotated[str, Form()] = DEFAULT_DEBUG_ENDPOINT,
+    tab_id: Annotated[str, Form()] = "",
+    source_url: Annotated[str, Form()] = "",
+    engine_id: Annotated[str, Form()] = "funasr-sensevoice",
+    model_name: Annotated[str, Form()] = "",
+    language: Annotated[str, Form()] = "zh",
+    chunk_seconds: Annotated[int, Form()] = 600,
+    batch_size_s: Annotated[int, Form()] = 60,
+    merge_length_s: Annotated[int, Form()] = 15,
+    cpu_threads: Annotated[int, Form()] = 4,
+    compute_type: Annotated[str, Form()] = "int8",
+    whisper_preset: Annotated[str, Form()] = "balanced",
+    apply_terminology: Annotated[bool, Form()] = True,
+    output_formats: Annotated[str, Form()] = "txt,srt,json",
+) -> dict:
+    try:
+        options = EngineOptions(
+            engine_id=engine_id,
+            model_name=model_name,
+            language=language,
+            chunk_seconds=max(30, min(int(chunk_seconds), 3600)),
+            batch_size_s=max(10, min(int(batch_size_s), 300)),
+            merge_length_s=max(5, min(int(merge_length_s), 60)),
+            cpu_threads=max(1, min(int(cpu_threads), 32)),
+            compute_type=compute_type,
+            whisper_preset=whisper_preset if whisper_preset in {"fast", "balanced", "quality"} else "balanced",
+            apply_terminology=apply_terminology,
+        )
+        record = browser_manager.start_transcribe(endpoint, tab_id, source_url, options, parse_formats(output_formats))
+        return record.snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/capture/start")
+def start_capture(
+    device_index: Annotated[str, Form()] = "",
+    engine_id: Annotated[str, Form()] = "funasr-sensevoice",
+    model_name: Annotated[str, Form()] = "",
+    language: Annotated[str, Form()] = "zh",
+    chunk_seconds: Annotated[int, Form()] = 600,
+    batch_size_s: Annotated[int, Form()] = 60,
+    merge_length_s: Annotated[int, Form()] = 15,
+    cpu_threads: Annotated[int, Form()] = 4,
+    compute_type: Annotated[str, Form()] = "int8",
+    whisper_preset: Annotated[str, Form()] = "balanced",
+    apply_terminology: Annotated[bool, Form()] = True,
+    output_formats: Annotated[str, Form()] = "txt,srt,json",
+) -> dict:
+    try:
+        options = EngineOptions(
+            engine_id=engine_id,
+            model_name=model_name,
+            language=language,
+            chunk_seconds=max(30, min(int(chunk_seconds), 3600)),
+            batch_size_s=max(10, min(int(batch_size_s), 300)),
+            merge_length_s=max(5, min(int(merge_length_s), 60)),
+            cpu_threads=max(1, min(int(cpu_threads), 32)),
+            compute_type=compute_type,
+            whisper_preset=whisper_preset if whisper_preset in {"fast", "balanced", "quality"} else "balanced",
+            apply_terminology=apply_terminology,
+        )
+        parsed_device_index = int(device_index) if device_index.strip() else None
+        record = capture_manager.start(options, parse_formats(output_formats), parsed_device_index)
+        return record.snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/capture/{session_id}/stop")
+def stop_capture(session_id: str) -> dict:
+    try:
+        record = capture_manager.stop(session_id)
+        return record.snapshot()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="capture session not found") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/capture/{session_id}/events")
+async def capture_events(session_id: str) -> StreamingResponse:
+    if capture_manager.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="capture session not found")
+
+    async def stream():
+        offset = 0
+        while True:
+            record = capture_manager.get_session(session_id)
+            if record is None:
+                break
+            events = record.events[offset:]
+            for event in events:
+                yield f"data: {event_payload(event)}\n\n"
+            offset += len(events)
+            if record.status in {"completed", "failed"} and offset >= len(record.events):
+                break
+            await asyncio.sleep(1)
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 @app.get("/api/jobs/{job_id}/events")

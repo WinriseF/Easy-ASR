@@ -1,0 +1,2 @@
+# Chrome DevTools Protocol WebSocket client for debug-browser media probing.
+websocket-client>=1.8.0

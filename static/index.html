@@ -79,6 +79,100 @@
           </button>
         </section>
 
+        <section class="source-panel" aria-label="音源监听">
+          <div class="panel-header">
+            <div>
+              <div class="section-label">音源监听</div>
+              <h3 id="sourcePanelTitle">调试浏览器</h3>
+            </div>
+            <div class="source-mode" role="tablist" aria-label="音源模式">
+              <button class="source-mode-button" type="button" data-source-mode="capture">
+                系统播放
+              </button>
+              <button class="source-mode-button is-active" type="button" data-source-mode="browser">
+                调试浏览器
+              </button>
+            </div>
+          </div>
+
+          <div class="source-pane" id="captureSourcePane" data-source-pane="capture" hidden>
+            <div class="capture-actions">
+              <button class="ghost-button" id="startCaptureButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12h14" /></svg>
+                开始监听
+              </button>
+              <button class="ghost-button" id="stopCaptureButton" type="button" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z" /></svg>
+                停止并转写
+              </button>
+            </div>
+            <div class="capture-grid">
+              <label class="field">
+                <span>播放设备</span>
+                <select id="captureDeviceSelect"></select>
+              </label>
+              <div class="capture-stat">
+                <span>状态</span>
+                <strong id="captureStatusText">未开始</strong>
+              </div>
+              <div class="capture-stat">
+                <span>时长</span>
+                <strong id="captureDurationText">0:00</strong>
+              </div>
+              <div class="level-meter" aria-label="采集电平">
+                <span id="captureLevelFill"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="source-pane" id="browserSourcePane" data-source-pane="browser">
+            <div class="capture-actions">
+              <button class="ghost-button" id="launchBrowserButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H4zM8 21h8M12 16v5" /></svg>
+                启动调试浏览器
+              </button>
+              <button class="ghost-button" id="refreshBrowserTabsButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M19 11a7 7 0 0 0-12-4M5 13a7 7 0 0 0 12 4" /></svg>
+                标签页
+              </button>
+              <button class="ghost-button" id="probeBrowserButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 10h4v4h-4zM4 4h16v16H4zM9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" /></svg>
+                监听媒体
+              </button>
+              <button class="ghost-button" id="transcribeBrowserButton" type="button" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" /></svg>
+                原源转写
+              </button>
+            </div>
+            <div class="browser-grid">
+              <label class="field">
+                <span>调试端口</span>
+                <input id="browserEndpointInput" type="text" value="http://127.0.0.1:9222" />
+              </label>
+              <label class="field">
+                <span>标签页</span>
+                <select id="browserTabSelect"></select>
+              </label>
+              <label class="field">
+                <span>候选媒体源</span>
+                <select id="browserCandidateSelect"></select>
+              </label>
+              <label class="field compact-field">
+                <span>监听秒数</span>
+                <input id="browserListenSecondsInput" type="number" min="1" max="15" value="4" />
+              </label>
+              <label class="check-row browser-check">
+                <input id="browserReloadInput" type="checkbox" />
+                <span>刷新后探测</span>
+              </label>
+              <div class="capture-stat browser-status">
+                <span>状态</span>
+                <strong id="browserStatusText">未连接</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section class="active-job" aria-labelledby="activeJobTitle">
           <div class="panel-header">
             <div>

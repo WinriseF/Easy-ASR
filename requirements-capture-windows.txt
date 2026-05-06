@@ -1,0 +1,2 @@
+# Windows WASAPI loopback capture for recording system playback output.
+PyAudioWPatch>=0.2.12
