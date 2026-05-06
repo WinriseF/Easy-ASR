@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Easy-ASR</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260506-ui3" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">EA</div>
+          <div>
+            <h1>Easy-ASR</h1>
+            <p>本地语音转写台</p>
+          </div>
+        </div>
+
+        <nav class="nav-list" aria-label="主导航">
+          <button class="nav-item is-active" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h10" /></svg>
+            任务
+          </button>
+          <button class="nav-item" type="button" id="refreshFilesButton">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M19 11a7 7 0 0 0-12-4M5 13a7 7 0 0 0 12 4" /></svg>
+            刷新
+          </button>
+        </nav>
+
+        <div class="sidebar-status" aria-label="运行状态">
+          <span></span>
+          <div>
+            <strong>CPU 优先</strong>
+            <small>单 worker 队列</small>
+          </div>
+        </div>
+
+        <section class="queue-section" aria-labelledby="queueTitle">
+          <div class="section-label" id="queueTitle">队列</div>
+          <div class="queue-list" id="jobQueue"></div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <div class="status-kicker" id="serverStatus">检查服务</div>
+            <h2>语音转写工作台</h2>
+          </div>
+          <div class="topbar-metrics" aria-label="工作台摘要">
+            <div><span>队列</span><strong id="jobCountText">0</strong></div>
+            <div><span>文件</span><strong id="fileCountText">0</strong></div>
+          </div>
+          <div class="topbar-actions">
+            <select id="existingFileSelect" aria-label="选择 input 目录文件">
+              <option value="">选择 input 目录文件</option>
+            </select>
+            <button class="icon-button" id="reloadButton" type="button" title="刷新">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v6h-6" /></svg>
+            </button>
+          </div>
+        </header>
+
+        <section class="upload-band" aria-label="上传转写">
+          <div class="drop-zone" id="dropZone">
+            <input id="audioFileInput" type="file" accept="audio/*,video/mp4,video/x-matroska" />
+            <div class="drop-copy">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg>
+              <div>
+                <strong id="dropTitle">拖入或选择 MP3/MP4</strong>
+                <span id="dropSubtitle">也可以直接转写 input 目录中的文件</span>
+              </div>
+            </div>
+          </div>
+          <button class="primary-button" id="startButton" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" /></svg>
+            开始转写
+          </button>
+        </section>
+
+        <section class="active-job" aria-labelledby="activeJobTitle">
+          <div class="panel-header">
+            <div>
+              <div class="section-label">当前任务</div>
+              <h3 id="activeJobTitle">等待输入</h3>
+            </div>
+            <div class="job-state" id="activeJobStatus">idle</div>
+          </div>
+          <div class="progress-track" aria-label="转写进度">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <div class="job-meta">
+            <span>进度 <strong id="progressText">0%</strong></span>
+            <span>时长 <strong id="durationText">--:--</strong></span>
+            <span>引擎 <strong id="engineText">未选择模型</strong></span>
+          </div>
+          <div class="wave-strip" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <div class="download-row" id="downloadRow"></div>
+        </section>
+
+        <section class="transcript-panel" aria-labelledby="transcriptTitle">
+          <div class="panel-header">
+            <div>
+              <div class="section-label">片段文本</div>
+              <h3 id="transcriptTitle">Transcript</h3>
+            </div>
+            <button class="ghost-button" id="copyTranscriptButton" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h11v11H8zM5 5h11v11" /></svg>
+              复制
+            </button>
+          </div>
+          <div class="segment-table-wrap">
+            <table class="segment-table">
+              <thead>
+                <tr>
+                  <th>序号</th>
+                  <th>开始</th>
+                  <th>结束</th>
+                  <th>文本</th>
+                </tr>
+              </thead>
+              <tbody id="segmentTable">
+                <tr><td colspan="4" class="empty-cell">暂无转写片段</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+
+      <aside class="inspector">
+        <section class="inspector-section">
+          <div class="section-label">模型</div>
+          <label class="field">
+            <span>ASR 引擎</span>
+            <select id="engineSelect"></select>
+          </label>
+          <label class="field">
+            <span>模型名</span>
+            <input id="modelNameInput" type="text" placeholder="默认模型" />
+          </label>
+          <label class="field">
+            <span>语言</span>
+            <select id="languageSelect">
+              <option value="zh">中文</option>
+              <option value="auto">自动</option>
+              <option value="en">English</option>
+              <option value="yue">粤语</option>
+              <option value="ja">日本語</option>
+              <option value="ko">한국어</option>
+            </select>
+          </label>
+          <div class="model-note" id="modelNote"></div>
+        </section>
+
+        <section class="inspector-section">
+          <div class="section-label">CPU 与切片</div>
+          <label class="field">
+            <span>CPU 线程</span>
+            <input id="cpuThreadsInput" type="number" min="1" max="32" value="4" />
+          </label>
+          <label class="field">
+            <span>切片秒数</span>
+            <input id="chunkSecondsInput" type="number" min="30" max="3600" value="600" />
+          </label>
+          <label class="field">
+            <span>动态 batch 秒数</span>
+            <input id="batchSizeInput" type="number" min="10" max="300" value="60" />
+          </label>
+          <label class="field">
+            <span>VAD 合并秒数</span>
+            <input id="mergeLengthInput" type="number" min="5" max="60" value="15" />
+          </label>
+          <label class="field">
+            <span>Whisper 量化</span>
+            <select id="computeTypeSelect">
+              <option value="int8">int8</option>
+              <option value="int8_float32">int8_float32</option>
+              <option value="float32">float32</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Whisper 模式</span>
+            <select id="whisperPresetSelect">
+              <option value="balanced">均衡</option>
+              <option value="fast">速度</option>
+              <option value="quality">质量</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="inspector-section">
+          <div class="section-label">术语库</div>
+          <label class="check-row">
+            <input id="applyTerminologyInput" type="checkbox" checked />
+            <span>启用术语增强</span>
+          </label>
+          <textarea id="terminologyEditor" spellcheck="false"></textarea>
+          <button class="ghost-button full-width" id="saveTerminologyButton" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h12l2 2v14H5zM8 4v6h8M8 18h8" /></svg>
+            保存术语库
+          </button>
+        </section>
+
+        <section class="inspector-section">
+          <div class="section-label">导出</div>
+          <label class="check-row"><input class="formatInput" type="checkbox" value="txt" checked /><span>TXT</span></label>
+          <label class="check-row"><input class="formatInput" type="checkbox" value="srt" checked /><span>SRT</span></label>
+          <label class="check-row"><input class="formatInput" type="checkbox" value="json" checked /><span>JSON</span></label>
+        </section>
+      </aside>
+    </div>
+
+    <footer class="logbar">
+      <div class="section-label">日志</div>
+      <div id="logOutput">Ready.</div>
+    </footer>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

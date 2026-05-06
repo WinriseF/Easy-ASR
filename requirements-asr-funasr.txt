@@ -1,0 +1,7 @@
+# CPU-first ASR backend used by the original project.
+# Install after requirements.txt when you want local SenseVoice transcription.
+funasr>=1.2.6
+modelscope>=1.18.0
+torch>=2.2
+torchaudio>=2.2
+

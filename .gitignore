@@ -1,0 +1,26 @@
+# Python / test cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Local runtime data and generated media
+input/
+output/
+chunks/
+data/
+models/
+
+# Local logs
+*.log
+
+# Codex/browser scratch files
+.codex-browser-profile/
+.codex-*.png
