@@ -459,7 +459,7 @@ function renderQueue() {
   if (!state.jobs.length) {
     const empty = document.createElement("div");
     empty.className = "queue-item";
-    empty.innerHTML = "<strong>暂无任务</strong><span>提交音频后会显示进度</span>";
+    empty.innerHTML = "<strong>暂无历史</strong><span>提交音频后会显示记录</span>";
     els.jobQueue.appendChild(empty);
     return;
   }

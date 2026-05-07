@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from easy_asr.engines.base import EngineOptions
-from easy_asr.jobs import JobManager
+from easy_asr.jobs import JobManager, safe_path_stem, short_timestamp
 
 
 CAPTURE_EXT = ".wav"
@@ -155,12 +155,13 @@ class PlaybackCaptureManager:
 
         session_id = uuid.uuid4().hex[:12]
         now = iso_now()
+        capture_stem = f"{safe_path_stem('系统播放', 'capture')}_{short_timestamp()}_{session_id[:8]}"
         record = CaptureRecord(
             id=session_id,
             status="starting",
             created_at=now,
             updated_at=now,
-            wav_path=self.capture_dir / f"capture_{session_id}{CAPTURE_EXT}",
+            wav_path=self.capture_dir / f"{capture_stem}{CAPTURE_EXT}",
             device_index=device_index,
         )
         record.events.append(CaptureEvent(at=now, type="starting", message="正在打开系统播放采集", progress=0))
@@ -232,7 +233,7 @@ class PlaybackCaptureManager:
                 channels = max(1, int(device.get("maxInputChannels") or 2))
                 frames_per_buffer = 1024
                 live_chunk_frames = max(sample_rate, sample_rate * record.live_chunk_seconds)
-                chunk_dir = self.capture_dir / record.id
+                chunk_dir = self.capture_dir / record.wav_path.stem
                 chunk_dir.mkdir(parents=True, exist_ok=True)
                 chunk_index = 0
                 chunk_start_frames = 0
@@ -313,7 +314,8 @@ class PlaybackCaptureManager:
             return
         options = self._options.get(record.id) or EngineOptions()
         formats = {"json"}
-        job = self.job_manager.submit(chunk_path, options, formats, hidden=True)
+        source_name = f"{record.wav_path.stem}_{chunk_path.stem}{CAPTURE_EXT}"
+        job = self.job_manager.submit(chunk_path, options, formats, hidden=True, source_name=source_name)
         with self._lock:
             record.job_id = job.id
             record.chunks.append(

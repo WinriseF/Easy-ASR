@@ -20,7 +20,7 @@ from urllib.request import Request, urlopen
 
 from easy_asr.audio import probe_duration, require_ffmpeg
 from easy_asr.engines.base import EngineOptions
-from easy_asr.jobs import JobManager
+from easy_asr.jobs import JobManager, safe_path_stem, short_timestamp
 
 
 DEFAULT_DEBUG_ENDPOINT = "http://127.0.0.1:9222"
@@ -310,6 +310,8 @@ class DebugBrowserManager:
         tab = self._find_tab(endpoint, tab_id)
         import_id = uuid.uuid4().hex[:12]
         now = iso_now()
+        source_label = str(tab.get("title") or _candidate_title(source_url) or "browser_media")
+        media_stem = safe_path_stem(source_label, "browser_media")
         record = BrowserImportRecord(
             id=import_id,
             status="extracting",
@@ -318,7 +320,7 @@ class DebugBrowserManager:
             endpoint=endpoint,
             created_at=now,
             updated_at=now,
-            media_path=self.media_dir / f"browser_{import_id}.wav",
+            media_path=self.media_dir / f"{media_stem}_{short_timestamp()}_{import_id[:8]}.wav",
         )
         record.events.append(BrowserImportEvent(at=now, type="extracting", message="正在提取浏览器原始媒体音频", progress=0))
         with self._lock:
