@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -18,14 +19,36 @@ _DURATION_CACHE: dict[tuple[str, int, int], float | None] = {}
 _DURATION_LOCK = Lock()
 
 
+def ffmpeg_exe() -> str:
+    configured = os.environ.get("EASY_ASR_FFMPEG_EXE")
+    if configured and Path(configured).exists():
+        return configured
+
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+
+    raise RuntimeError("未找到 ffmpeg，请确认打包目录中包含 bin/ffmpeg.exe。")
+
+
+def ffprobe_exe() -> str:
+    configured = os.environ.get("EASY_ASR_FFPROBE_EXE")
+    if configured and Path(configured).exists():
+        return configured
+
+    found = shutil.which("ffprobe")
+    if found:
+        return found
+
+    raise RuntimeError("未找到 ffprobe，请确认打包目录中包含 bin/ffprobe.exe。")
+
+
 def require_ffmpeg() -> None:
-    if shutil.which("ffmpeg") is None:
-        raise RuntimeError("未找到 ffmpeg，请先安装 ffmpeg 并加入 PATH。")
+    ffmpeg_exe()
 
 
 def require_ffprobe() -> None:
-    if shutil.which("ffprobe") is None:
-        raise RuntimeError("未找到 ffprobe，请先安装 ffmpeg 并加入 PATH。")
+    ffprobe_exe()
 
 
 def probe_duration(path: Path) -> float | None:
@@ -46,11 +69,13 @@ def probe_duration(path: Path) -> float | None:
 
 
 def _probe_duration_uncached(path: Path) -> float | None:
-    if shutil.which("ffprobe") is None:
+    try:
+        ffprobe_path = ffprobe_exe()
+    except RuntimeError:
         return None
 
     cmd = [
-        "ffprobe",
+        ffprobe_path,
         "-v",
         "error",
         "-show_entries",
@@ -91,7 +116,7 @@ def split_audio_to_chunks(
     if not existing_chunks:
         output_pattern = str(chunk_dir / "chunk_%04d.wav")
         cmd = [
-            "ffmpeg",
+            ffmpeg_exe(),
             "-hide_banner",
             "-loglevel",
             "error",

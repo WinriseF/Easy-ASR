@@ -54,12 +54,12 @@ if default_terms.exists():
     ]
 
 
-# ffmpeg / ffprobe：打到 bin 目录
+# ffmpeg / ffprobe：作为普通数据文件带进去，不让 PyInstaller 当二进制依赖扫描
 ffmpeg_dir = project_dir / "vendor" / "ffmpeg" / "bin"
 for name in ["ffmpeg.exe", "ffprobe.exe"]:
     path = ffmpeg_dir / name
     if path.exists():
-        binaries += [
+        datas += [
             (str(path), "bin"),
         ]
 

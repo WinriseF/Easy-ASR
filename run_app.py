@@ -8,9 +8,6 @@ from datetime import datetime
 from multiprocessing import freeze_support
 from pathlib import Path
 
-import uvicorn
-
-
 def _runtime_base_dir() -> Path:
     """
     运行时可写目录：
@@ -33,7 +30,15 @@ def _bundle_base_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def _prepend_bundled_ffmpeg() -> None:
+def _warm_up_python_ssl() -> None:
+    try:
+        import ssl
+        _ = ssl.OPENSSL_VERSION
+    except Exception:
+        pass
+
+
+def _configure_bundled_ffmpeg() -> None:
     runtime_dir = _runtime_base_dir()
     bundle_dir = _bundle_base_dir()
 
@@ -45,8 +50,13 @@ def _prepend_bundled_ffmpeg() -> None:
     ]
 
     for bin_dir in candidates:
-        if (bin_dir / "ffmpeg.exe").exists() and (bin_dir / "ffprobe.exe").exists():
-            os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+        ffmpeg = bin_dir / "ffmpeg.exe"
+        ffprobe = bin_dir / "ffprobe.exe"
+
+        if ffmpeg.exists() and ffprobe.exists():
+            os.environ["EASY_ASR_FFMPEG_EXE"] = str(ffmpeg)
+            os.environ["EASY_ASR_FFPROBE_EXE"] = str(ffprobe)
+            os.environ["EASY_ASR_FFMPEG_DIR"] = str(bin_dir)
             return
 
 
@@ -147,10 +157,12 @@ if __name__ == "__main__":
         runtime_dir = _runtime_base_dir()
         os.chdir(runtime_dir)
 
-        _prepend_bundled_ffmpeg()
+        _warm_up_python_ssl()
+        _configure_bundled_ffmpeg()
         _print_banner()
 
         from easy_asr.main import app
+        import uvicorn
 
         uvicorn.run(
             app,
@@ -159,6 +171,7 @@ if __name__ == "__main__":
             reload=False,
             workers=1,
             log_level="info",
+            use_colors=False,
         )
 
     except KeyboardInterrupt:

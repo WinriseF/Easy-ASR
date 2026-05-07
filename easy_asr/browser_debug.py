@@ -18,7 +18,7 @@ from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from easy_asr.audio import probe_duration, require_ffmpeg
+from easy_asr.audio import ffmpeg_exe, ffprobe_exe, probe_duration, require_ffmpeg
 from easy_asr.engines.base import EngineOptions
 from easy_asr.jobs import JobManager, safe_path_stem, short_timestamp
 
@@ -463,6 +463,9 @@ class DebugBrowserManager:
             "quiet": True,
             "no_warnings": True,
         }
+        ffmpeg_dir = os.environ.get("EASY_ASR_FFMPEG_DIR", "")
+        if ffmpeg_dir:
+            options["ffmpeg_location"] = ffmpeg_dir
         if kind == "video":
             options["merge_output_format"] = "mp4"
         else:
@@ -483,7 +486,7 @@ class DebugBrowserManager:
         require_ffmpeg()
         record.media_path.parent.mkdir(parents=True, exist_ok=True)
         header_text = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+        cmd = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y"]
         if header_text:
             cmd.extend(["-headers", header_text])
         cmd.extend(["-i", record.source_url])
@@ -514,6 +517,7 @@ class DebugBrowserManager:
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
+            "ffmpeg_location": os.environ.get("EASY_ASR_FFMPEG_DIR", ""),
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -579,7 +583,7 @@ class DebugBrowserManager:
         record.media_path.parent.mkdir(parents=True, exist_ok=True)
         header_text = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
         cmd = [
-            "ffmpeg",
+            ffmpeg_exe(),
             "-hide_banner",
             "-loglevel",
             "error",
@@ -991,11 +995,10 @@ def _candidate_title(url: str) -> str:
 
 
 def _probe_remote_duration(source_url: str, headers: dict[str, str]) -> float:
-    if which("ffprobe") is None:
-        raise RuntimeError("未找到 ffprobe，无法验证媒体源。")
+    ffprobe_path = ffprobe_exe()
     header_text = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
     cmd = [
-        "ffprobe",
+        ffprobe_path,
         "-v",
         "error",
     ]
