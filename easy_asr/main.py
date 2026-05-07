@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import uuid
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated
@@ -21,8 +22,29 @@ from easy_asr.engines.base import EngineOptions
 from easy_asr.jobs import JobManager, event_payload, parse_formats
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-STATIC_DIR = BASE_DIR / "static"
+def _runtime_base_dir() -> Path:
+    """
+    运行时可写目录：
+    input / output / chunks / models / data 都放这里。
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+def _resource_base_dir() -> Path:
+    """
+    打包资源目录：
+    static 等只读资源放这里。
+    """
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent / "_internal"))
+    return Path(__file__).resolve().parent.parent
+
+
+BASE_DIR = _runtime_base_dir()
+RESOURCE_DIR = _resource_base_dir()
+STATIC_DIR = RESOURCE_DIR / "static"
 
 manager = JobManager(BASE_DIR)
 manager.ensure_dirs()
