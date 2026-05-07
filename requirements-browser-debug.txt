@@ -1,2 +1,5 @@
 # Chrome DevTools Protocol WebSocket client for debug-browser media probing.
 websocket-client>=1.8.0
+
+# Site-aware extractor fallback for YouTube and similar adaptive streaming pages.
+yt-dlp

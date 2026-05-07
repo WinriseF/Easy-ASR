@@ -36,6 +36,7 @@ NON_MEDIA_ENDPOINT_RE = re.compile(
     r"(drm|widevine|license|licence|token|auth|key|beacon|telemetry|analytics|log|stat|track)",
     re.IGNORECASE,
 )
+YTDLP_HOST_RE = re.compile(r"(^|\.)youtube\.com$|(^|\.)youtu\.be$", re.IGNORECASE)
 
 
 MEDIA_PROBE_SCRIPT = r"""
@@ -239,6 +240,7 @@ class DebugBrowserManager:
             network_items = _network_candidates(events)
         candidates = _merge_candidates(before, after, network_items)
         candidates = self._validate_candidates(endpoint, tab, candidates)
+        candidates = self._with_extractor_candidate(tab, after or before, candidates)
         recommended = next((item for item in candidates if item["supported"]), None)
         if recommended is not None:
             recommended["recommended"] = True
@@ -249,6 +251,15 @@ class DebugBrowserManager:
             "recommended_url": recommended["url"] if recommended else "",
             "notes": _probe_notes(before, after, candidates),
         }
+
+    def _with_extractor_candidate(self, tab: dict, page: dict, candidates: list[dict]) -> list[dict]:
+        page_url = str(page.get("url") or tab.get("url") or "")
+        if not _is_ytdlp_page_url(page_url):
+            return candidates
+        candidate = _yt_dlp_candidate(page_url, str(tab.get("title") or page.get("title") or "YouTube"))
+        if any(item.get("url") == candidate["url"] and item.get("source") == candidate["source"] for item in candidates):
+            return candidates
+        return sorted([candidate, *candidates], key=lambda item: (0 if item.get("supported") else 1, -int(item.get("score") or 0)))
 
     def _validate_candidates(self, endpoint: str, tab: dict, candidates: list[dict]) -> list[dict]:
         if not candidates:
@@ -347,8 +358,11 @@ class DebugBrowserManager:
             return
         try:
             tab = self._find_tab(record.endpoint, record.tab_id)
-            headers = self._headers_for_media(record.endpoint, tab, record.source_url)
-            self._extract_audio(record, headers)
+            if _is_ytdlp_page_url(record.source_url):
+                self._extract_audio_with_ytdlp(record)
+            else:
+                headers = self._headers_for_media(record.endpoint, tab, record.source_url)
+                self._extract_audio(record, headers)
             duration_label = _duration_label(record.duration_seconds)
             options = self._options.get(import_id) or EngineOptions()
             formats = self._formats.get(import_id) or {"txt"}
@@ -372,7 +386,44 @@ class DebugBrowserManager:
                 record.updated_at = iso_now()
                 record.events.append(
                     BrowserImportEvent(at=record.updated_at, type="failed", message=f"浏览器媒体提取失败: {exc}", progress=1)
+            )
+
+    def _extract_audio_with_ytdlp(self, record: BrowserImportRecord) -> None:
+        ytdlp = _load_ytdlp()
+        require_ffmpeg()
+        record.media_path.parent.mkdir(parents=True, exist_ok=True)
+        output_template = str(record.media_path.with_suffix(".%(ext)s"))
+        options = {
+            "format": "bestaudio/best",
+            "outtmpl": output_template,
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "wav",
+                    "preferredquality": "0",
+                }
+            ],
+        }
+        with ytdlp.YoutubeDL(options) as downloader:
+            downloader.download([record.source_url])
+        if not record.media_path.exists() or record.media_path.stat().st_size == 0:
+            raise RuntimeError("yt-dlp 没有生成可用的音频文件。")
+        duration_seconds = probe_duration(record.media_path)
+        duration_label = _duration_label(duration_seconds)
+        with self._lock:
+            record.duration_seconds = duration_seconds
+            record.updated_at = iso_now()
+            record.events.append(
+                BrowserImportEvent(
+                    at=record.updated_at,
+                    type="extracted",
+                    message=f"页面媒体音频已提取，音频时长 {duration_label}",
+                    progress=0.7,
                 )
+            )
 
     def _headers_for_media(self, endpoint: str, tab: dict, source_url: str) -> dict[str, str]:
         headers: dict[str, str] = {
@@ -706,6 +757,46 @@ def _candidate_payload(item: dict, url: str) -> dict:
     }
 
 
+def _yt_dlp_candidate(page_url: str, title: str) -> dict:
+    reason = ""
+    supported = True
+    try:
+        _load_ytdlp()
+    except Exception as exc:
+        supported = False
+        reason = str(exc)
+    return {
+        "id": uuid.uuid5(uuid.NAMESPACE_URL, f"yt-dlp:{page_url}").hex[:12],
+        "url": page_url,
+        "source": "yt-dlp",
+        "mime_type": "",
+        "resource_type": "page",
+        "title": title or _candidate_title(page_url),
+        "supported": supported,
+        "recommended": False,
+        "reason": reason,
+        "duration_seconds": 0,
+        "validation_status": "ok" if supported else "failed",
+        "score": 220,
+    }
+
+
+def _is_ytdlp_page_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not YTDLP_HOST_RE.search(host):
+        return False
+    return parsed.path.startswith(("/watch", "/shorts/", "/live/")) or host.endswith("youtu.be")
+
+
+def _load_ytdlp():
+    try:
+        import yt_dlp as ytdlp
+    except ImportError as exc:
+        raise RuntimeError("YouTube 页面需要安装 requirements-browser-debug.txt 中的 yt-dlp。") from exc
+    return ytdlp
+
+
 def _candidate_score(url: str, item: dict, supported: bool) -> int:
     if _is_non_media_endpoint(url, str(item.get("mime_type") or "")):
         return 1
@@ -829,6 +920,8 @@ def _probe_notes(before: dict, after: dict, candidates: list[dict]) -> list[str]
     media = (after or before).get("media") or []
     if any(str(item.get("currentSrc") or "").startswith("blob:") for item in media):
         notes.append("页面媒体是 blob: 源；如果候选里没有 m3u8/mpd/mp4，请先刷新或重新播放后再探测。")
+    if any(item.get("source") == "yt-dlp" for item in candidates):
+        notes.append("检测到 YouTube 页面；已加入 yt-dlp 页面提取候选，适合处理 blob/MSE 自适应流。")
     if any(float(item.get("playbackRate") or 1) != 1 for item in media):
         notes.append("页面正在倍速播放；候选媒体会按原始 URL 转写，不使用倍速后的系统声音。")
     if not candidates:
