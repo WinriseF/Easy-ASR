@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Easy-ASR</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260506-ui5" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260507-mode1" />
   </head>
   <body>
     <div class="app-shell">
@@ -255,6 +255,14 @@
               <option value="ko">한국어</option>
             </select>
           </label>
+          <label class="field">
+            <span>转写方案</span>
+            <select id="transcriptModeSelect">
+              <option value="whole" selected>整体文本</option>
+              <option value="chunk">按切片</option>
+              <option value="sentence">智能分句</option>
+            </select>
+          </label>
           <div class="model-note" id="modelNote"></div>
         </section>
 
@@ -321,9 +329,11 @@
 
     <footer class="logbar">
       <div class="section-label">日志</div>
-      <div id="logOutput">Ready.</div>
+      <div id="logOutput" data-empty="true">
+        <div class="log-line"><span class="log-time">--:--:--</span><span class="log-message">Ready.</span></div>
+      </div>
     </footer>
 
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=20260507-mode1" defer></script>
   </body>
 </html>

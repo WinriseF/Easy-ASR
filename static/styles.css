@@ -73,7 +73,7 @@ svg {
 .app-shell {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) minmax(320px, 356px);
-  min-height: calc(100vh - 54px);
+  min-height: calc(100vh - 168px);
   background: var(--canvas);
 }
 
@@ -996,12 +996,12 @@ select.native-select-hidden {
 .logbar {
   display: grid;
   grid-template-columns: 80px minmax(0, 1fr);
-  align-items: center;
-  min-height: 54px;
+  align-items: start;
+  height: 168px;
   border-top: 1px solid #1f2937;
   background: #0d1420;
   color: #d8dee9;
-  padding: 0 16px;
+  padding: 12px 16px;
 }
 
 .logbar .section-label {
@@ -1009,11 +1009,27 @@ select.native-select-hidden {
 }
 
 #logOutput {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  height: 144px;
+  overflow: auto;
+  padding-right: 8px;
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 12px;
+  line-height: 1.55;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+}
+
+.log-time {
+  color: #7f8ca3;
+}
+
+.log-message {
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 1180px) {

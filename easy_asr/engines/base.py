@@ -60,6 +60,7 @@ class EngineOptions:
     compute_type: str = "int8"
     whisper_preset: str = "balanced"
     apply_terminology: bool = True
+    transcript_mode: str = "whole"
     work_dir: Path | None = None
 
 

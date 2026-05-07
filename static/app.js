@@ -11,6 +11,7 @@ const state = {
   activeBrowserImport: null,
   eventSource: null,
   captureEventSource: null,
+  logKeys: new Set(),
 };
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
@@ -62,6 +63,7 @@ const els = {
   engineSelect: document.getElementById("engineSelect"),
   modelNameInput: document.getElementById("modelNameInput"),
   languageSelect: document.getElementById("languageSelect"),
+  transcriptModeSelect: document.getElementById("transcriptModeSelect"),
   modelNote: document.getElementById("modelNote"),
   cpuThreadsInput: document.getElementById("cpuThreadsInput"),
   chunkSecondsInput: document.getElementById("chunkSecondsInput"),
@@ -84,8 +86,45 @@ async function api(path, options = {}) {
   return response.json();
 }
 
-function log(message) {
-  els.logOutput.textContent = `${new Date().toLocaleTimeString()} ${message}`;
+function log(message, { key = "" } = {}) {
+  if (key && state.logKeys.has(key)) {
+    return;
+  }
+  if (key) {
+    state.logKeys.add(key);
+  }
+  if (els.logOutput.dataset.empty !== "false") {
+    els.logOutput.innerHTML = "";
+    els.logOutput.dataset.empty = "false";
+  }
+  const line = document.createElement("div");
+  line.className = "log-line";
+  const time = document.createElement("span");
+  time.className = "log-time";
+  time.textContent = new Date().toLocaleTimeString();
+  const text = document.createElement("span");
+  text.className = "log-message";
+  text.textContent = message;
+  line.append(time, text);
+  els.logOutput.appendChild(line);
+  while (els.logOutput.children.length > 1000) {
+    els.logOutput.firstElementChild?.remove();
+  }
+  els.logOutput.scrollTop = els.logOutput.scrollHeight;
+}
+
+function logJobEvents(job) {
+  for (const event of job.events || []) {
+    log(event.message, { key: `job:${job.id}:${event.at}:${event.type}:${event.message}` });
+  }
+}
+
+function logCaptureEvent(captureId, event) {
+  log(event.message, { key: `capture:${captureId}:${event.at}:${event.type}:${event.message}` });
+}
+
+function logJobEvent(jobId, event) {
+  log(event.message, { key: `job:${jobId}:${event.at}:${event.type}:${event.message}` });
 }
 
 function initUiSelects() {
@@ -487,6 +526,7 @@ function renderSourceMode() {
 async function setActiveJob(jobId) {
   const job = await api(`/api/jobs/${jobId}`);
   state.activeJob = job;
+  logJobEvents(job);
   renderActiveJob(job);
   if (TERMINAL_STATUSES.has(job.status)) {
     closeJobEvents();
@@ -580,9 +620,12 @@ function watchJob(jobId) {
   state.eventSource = new EventSource(`/api/jobs/${jobId}/events`);
   state.eventSource.onmessage = async (event) => {
     const payload = JSON.parse(event.data);
-    log(payload.message);
+    logJobEvent(jobId, payload);
     const terminal = TERMINAL_STATUSES.has(payload.type);
-    await refreshJobs({ detail: terminal });
+    applyJobEvent(jobId, payload);
+    if (terminal) {
+      await refreshJobs({ detail: true });
+    }
     if (terminal) {
       closeJobEvents();
     }
@@ -590,6 +633,30 @@ function watchJob(jobId) {
   state.eventSource.onerror = () => {
     closeJobEvents();
   };
+}
+
+function applyJobEvent(jobId, payload) {
+  const progress = typeof payload.progress === "number" ? payload.progress : null;
+  if (state.activeJob?.id === jobId) {
+    state.activeJob = {
+      ...state.activeJob,
+      status: payload.type === "progress" ? state.activeJob.status : payload.type,
+      progress: progress ?? state.activeJob.progress,
+      updated_at: payload.at || state.activeJob.updated_at,
+    };
+    renderActiveJob(state.activeJob, { includeSegments: false });
+  }
+  const queueJob = state.jobs.find((job) => job.id === jobId);
+  if (queueJob) {
+    if (payload.type !== "progress") {
+      queueJob.status = payload.type;
+    }
+    if (progress !== null) {
+      queueJob.progress = progress;
+    }
+    queueJob.updated_at = payload.at || queueJob.updated_at;
+    renderQueue();
+  }
 }
 
 function closeJobEvents() {
@@ -667,7 +734,7 @@ function watchCapture(captureId) {
   state.captureEventSource = new EventSource(`/api/capture/${captureId}/events`);
   state.captureEventSource.onmessage = async (event) => {
     const payload = JSON.parse(event.data);
-    log(payload.message);
+    logCaptureEvent(captureId, payload);
     await refreshCapture(captureId);
     if (TERMINAL_STATUSES.has(payload.type) || payload.type === "completed" || payload.type === "failed") {
       closeCaptureEvents();
@@ -776,6 +843,7 @@ async function transcribeBrowserMedia() {
 async function refreshBrowserImport(importId) {
   const record = await api(`/api/browser/imports/${importId}`);
   state.activeBrowserImport = record;
+  logBrowserImportEvents(record);
   els.browserStatusText.textContent = browserImportStatusText(record);
   if (record.status === "submitted" && record.job_id) {
     state.activeBrowserImport = null;
@@ -786,6 +854,12 @@ async function refreshBrowserImport(importId) {
     state.activeBrowserImport = null;
     els.transcribeBrowserButton.disabled = !els.browserCandidateSelect.value;
     log(`浏览器媒体提取失败: ${record.error}`);
+  }
+}
+
+function logBrowserImportEvents(record) {
+  for (const event of record.events || []) {
+    log(event.message, { key: `browser:${record.id}:${event.at}:${event.type}:${event.message}` });
   }
 }
 
@@ -814,6 +888,7 @@ function appendTranscriptionOptions(form) {
   form.append("compute_type", els.computeTypeSelect.value);
   form.append("whisper_preset", els.whisperPresetSelect.value);
   form.append("apply_terminology", els.applyTerminologyInput.checked ? "true" : "false");
+  form.append("transcript_mode", els.transcriptModeSelect.value);
   form.append("output_formats", selectedFormats().join(","));
 }
 

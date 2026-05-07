@@ -123,6 +123,7 @@ def create_job(
     compute_type: Annotated[str, Form()] = "int8",
     whisper_preset: Annotated[str, Form()] = "balanced",
     apply_terminology: Annotated[bool, Form()] = True,
+    transcript_mode: Annotated[str, Form()] = "whole",
     output_formats: Annotated[str, Form()] = "txt,srt,vtt,tsv,json",
 ) -> dict:
     try:
@@ -144,6 +145,7 @@ def create_job(
             compute_type=compute_type,
             whisper_preset=whisper_preset if whisper_preset in {"fast", "balanced", "quality"} else "balanced",
             apply_terminology=apply_terminology,
+            transcript_mode=_transcript_mode(transcript_mode),
         )
         record = manager.submit(input_path, options, parse_formats(output_formats))
         return record.snapshot()
@@ -198,6 +200,7 @@ def transcribe_browser(
     compute_type: Annotated[str, Form()] = "int8",
     whisper_preset: Annotated[str, Form()] = "balanced",
     apply_terminology: Annotated[bool, Form()] = True,
+    transcript_mode: Annotated[str, Form()] = "whole",
     output_formats: Annotated[str, Form()] = "txt,srt,vtt,tsv,json",
 ) -> dict:
     try:
@@ -212,6 +215,7 @@ def transcribe_browser(
             compute_type=compute_type,
             whisper_preset=whisper_preset if whisper_preset in {"fast", "balanced", "quality"} else "balanced",
             apply_terminology=apply_terminology,
+            transcript_mode=_transcript_mode(transcript_mode),
         )
         record = browser_manager.start_transcribe(endpoint, tab_id, source_url, options, parse_formats(output_formats))
         return record.snapshot()
@@ -232,6 +236,7 @@ def start_capture(
     compute_type: Annotated[str, Form()] = "int8",
     whisper_preset: Annotated[str, Form()] = "balanced",
     apply_terminology: Annotated[bool, Form()] = True,
+    transcript_mode: Annotated[str, Form()] = "whole",
     output_formats: Annotated[str, Form()] = "txt,srt,json",
 ) -> dict:
     try:
@@ -246,6 +251,7 @@ def start_capture(
             compute_type=compute_type,
             whisper_preset=whisper_preset if whisper_preset in {"fast", "balanced", "quality"} else "balanced",
             apply_terminology=apply_terminology,
+            transcript_mode=_transcript_mode(transcript_mode),
         )
         parsed_device_index = int(device_index) if device_index.strip() else None
         record = capture_manager.start(options, parse_formats(output_formats), parsed_device_index)
@@ -282,7 +288,7 @@ async def capture_events(session_id: str) -> StreamingResponse:
             offset += len(events)
             if record.status in {"completed", "failed"} and offset >= len(record.events):
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.2)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -304,7 +310,7 @@ async def job_events(job_id: str) -> StreamingResponse:
             offset += len(events)
             if record.status in {"completed", "failed", "cancelled"} and offset >= len(record.events):
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.2)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -318,6 +324,10 @@ def download(job_id: str, format_name: str) -> FileResponse:
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="output not found")
     return FileResponse(path, filename=path.name)
+
+
+def _transcript_mode(value: str) -> str:
+    return value if value in {"whole", "chunk", "sentence"} else "whole"
 
 
 @app.get("/api/terminology")
