@@ -29,7 +29,6 @@ def _bundle_base_dir() -> Path:
         return Path(getattr(sys, "_MEIPASS", _runtime_base_dir() / "_internal"))
     return Path(__file__).resolve().parent
 
-
 def _prepend_bundled_ffmpeg() -> None:
     runtime_dir = _runtime_base_dir()
     bundle_dir = _bundle_base_dir()
@@ -46,6 +45,20 @@ def _prepend_bundled_ffmpeg() -> None:
             os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
             return
 
+def _print_banner() -> None:
+    banner = r"""
+  ______    ___    _____ __   __          ___      _____ _____  
+ |  ____|  / \ \  / / __|\ \ / /         / \ \    / / __|  __ \ 
+ | |__    / _ \ \/ /\__ \ \ V /  _____  / _ \ \  / /\__ \ |__) |
+ |  __|  / ___ \  /  __) | | |  |_____|/ ___ \ \/ /  __) |  _  / 
+ | |____/_/   \_\/  |____/  |_|       /_/   \_\  /  |____/| | \ \ 
+ |______|                                EASY-ASR  |_|        |_|  \_\
+
+    Local Speech-to-Text Workstation
+    Web UI : http://127.0.0.1:8765
+    Mode   : FastAPI + Uvicorn + Local ASR
+"""
+    print(banner, flush=True)
 
 if __name__ == "__main__":
     freeze_support()
@@ -54,6 +67,7 @@ if __name__ == "__main__":
     os.chdir(runtime_dir)
 
     _prepend_bundled_ffmpeg()
+    _print_banner()
 
     from easy_asr.main import app
 
