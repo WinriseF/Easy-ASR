@@ -18,9 +18,14 @@ chunks/
 data/
 models/
 
+# Bundled third-party binaries for local/package builds
+vendor/ffmpeg/
+
 # Local logs
 *.log
 
 # Codex/browser scratch files
 .codex-browser-profile/
 .codex-*.png
+build/
+dist/
