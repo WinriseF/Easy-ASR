@@ -36,7 +36,14 @@ NON_MEDIA_ENDPOINT_RE = re.compile(
     r"(drm|widevine|license|licence|token|auth|key|beacon|telemetry|analytics|log|stat|track)",
     re.IGNORECASE,
 )
-YTDLP_HOST_RE = re.compile(r"(^|\.)youtube\.com$|(^|\.)youtu\.be$", re.IGNORECASE)
+YTDLP_HOST_RE = re.compile(
+    r"(^|\.)("
+    r"youtube\.com|youtu\.be|bilibili\.com|vimeo\.com|tiktok\.com|douyin\.com|kuaishou\.com|"
+    r"twitter\.com|x\.com|facebook\.com|instagram\.com|twitch\.tv|dailymotion\.com|"
+    r"reddit\.com|soundcloud\.com|nicovideo\.jp"
+    r")$",
+    re.IGNORECASE,
+)
 
 
 MEDIA_PROBE_SCRIPT = r"""
@@ -101,6 +108,7 @@ class BrowserImportRecord:
     updated_at: str
     media_path: Path
     job_id: str = ""
+    mode: str = "transcribe"
     duration_seconds: float | None = None
     error: str = ""
     events: list[BrowserImportEvent] = field(default_factory=list)
@@ -332,12 +340,47 @@ class DebugBrowserManager:
             created_at=now,
             updated_at=now,
             media_path=self.media_dir / f"{media_stem}_{short_timestamp()}_{import_id[:8]}.wav",
+            mode="transcribe",
         )
         record.events.append(BrowserImportEvent(at=now, type="extracting", message="正在提取浏览器原始媒体音频", progress=0))
         with self._lock:
             self._imports[import_id] = record
             self._options[import_id] = options
             self._formats[import_id] = formats or {"txt"}
+        self._executor.submit(self._extract_and_submit, import_id)
+        return record
+
+    def start_download(
+        self,
+        endpoint: str,
+        tab_id: str,
+        source_url: str,
+        kind: str,
+    ) -> BrowserImportRecord:
+        kind = "video" if kind == "video" else "audio"
+        _validate_media_url(source_url)
+        tab = self._find_tab(endpoint, tab_id)
+        import_id = uuid.uuid4().hex[:12]
+        now = iso_now()
+        source_label = str(tab.get("title") or _candidate_title(source_url) or "browser_media")
+        media_stem = safe_path_stem(source_label, "browser_media")
+        suffix = ".mp4" if kind == "video" else ".m4a"
+        record = BrowserImportRecord(
+            id=import_id,
+            status="extracting",
+            source_url=source_url,
+            tab_id=str(tab["id"]),
+            endpoint=endpoint,
+            created_at=now,
+            updated_at=now,
+            media_path=self.media_dir / f"{media_stem}_{short_timestamp()}_{import_id[:8]}{suffix}",
+            mode=f"download_{kind}",
+        )
+        record.events.append(
+            BrowserImportEvent(at=now, type="extracting", message=f"正在提取浏览器媒体{_download_kind_label(kind)}", progress=0)
+        )
+        with self._lock:
+            self._imports[import_id] = record
         self._executor.submit(self._extract_and_submit, import_id)
         return record
 
@@ -358,6 +401,26 @@ class DebugBrowserManager:
             return
         try:
             tab = self._find_tab(record.endpoint, record.tab_id)
+            if record.mode in {"download_audio", "download_video"}:
+                kind = "video" if record.mode == "download_video" else "audio"
+                if _is_ytdlp_page_url(record.source_url):
+                    self._download_with_ytdlp(record, kind)
+                else:
+                    headers = self._headers_for_media(record.endpoint, tab, record.source_url)
+                    self._download_direct_media(record, headers, kind)
+                with self._lock:
+                    record.status = "downloaded"
+                    record.updated_at = iso_now()
+                    record.events.append(
+                        BrowserImportEvent(
+                            at=record.updated_at,
+                            type="downloaded",
+                            message=f"浏览器媒体{_download_kind_label(kind)}已准备下载",
+                            progress=1,
+                        )
+                    )
+                return
+
             if _is_ytdlp_page_url(record.source_url):
                 self._extract_audio_with_ytdlp(record)
             else:
@@ -387,6 +450,58 @@ class DebugBrowserManager:
                 record.events.append(
                     BrowserImportEvent(at=record.updated_at, type="failed", message=f"浏览器媒体提取失败: {exc}", progress=1)
             )
+
+    def _download_with_ytdlp(self, record: BrowserImportRecord, kind: str) -> None:
+        ytdlp = _load_ytdlp()
+        require_ffmpeg()
+        record.media_path.parent.mkdir(parents=True, exist_ok=True)
+        output_template = str(record.media_path.with_suffix(".%(ext)s"))
+        options = {
+            "format": "bestvideo*+bestaudio/best" if kind == "video" else "bestaudio/best",
+            "outtmpl": output_template,
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+        }
+        if kind == "video":
+            options["merge_output_format"] = "mp4"
+        else:
+            options["postprocessors"] = [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "m4a",
+                    "preferredquality": "0",
+                }
+            ]
+        with ytdlp.YoutubeDL(options) as downloader:
+            downloader.download([record.source_url])
+        if not record.media_path.exists() or record.media_path.stat().st_size == 0:
+            raise RuntimeError("yt-dlp 没有生成可用的媒体文件。")
+        self._set_download_duration(record)
+
+    def _download_direct_media(self, record: BrowserImportRecord, headers: dict[str, str], kind: str) -> None:
+        require_ffmpeg()
+        record.media_path.parent.mkdir(parents=True, exist_ok=True)
+        header_text = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+        if header_text:
+            cmd.extend(["-headers", header_text])
+        cmd.extend(["-i", record.source_url])
+        if kind == "video":
+            cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy"])
+        else:
+            cmd.extend(["-vn", "-ac", "2", "-c:a", "aac", "-b:a", "192k"])
+        cmd.append(str(record.media_path))
+        _run_ffmpeg(cmd)
+        if not record.media_path.exists() or record.media_path.stat().st_size == 0:
+            raise RuntimeError("ffmpeg 没有生成可用的媒体文件。")
+        self._set_download_duration(record)
+
+    def _set_download_duration(self, record: BrowserImportRecord) -> None:
+        duration_seconds = probe_duration(record.media_path)
+        with self._lock:
+            record.duration_seconds = duration_seconds
+            record.updated_at = iso_now()
 
     def _extract_audio_with_ytdlp(self, record: BrowserImportRecord) -> None:
         ytdlp = _load_ytdlp()
@@ -786,15 +901,37 @@ def _is_ytdlp_page_url(url: str) -> bool:
     host = (parsed.hostname or "").lower()
     if not YTDLP_HOST_RE.search(host):
         return False
-    return parsed.path.startswith(("/watch", "/shorts/", "/live/")) or host.endswith("youtu.be")
+    if MEDIA_URL_RE.search(parsed.path.lower()):
+        return False
+    if host.endswith(("youtube.com", "youtu.be")):
+        return parsed.path.startswith(("/watch", "/shorts/", "/live/")) or host.endswith("youtu.be")
+    return bool(parsed.path.strip("/"))
 
 
 def _load_ytdlp():
     try:
         import yt_dlp as ytdlp
     except ImportError as exc:
-        raise RuntimeError("YouTube 页面需要安装 requirements-browser-debug.txt 中的 yt-dlp。") from exc
+        raise RuntimeError("平台页面提取需要安装 requirements-browser-debug.txt 中的 yt-dlp。") from exc
     return ytdlp
+
+
+def _run_ffmpeg(cmd: list[str]) -> None:
+    completed = subprocess.run(
+        cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip() or "ffmpeg 处理失败"
+        raise RuntimeError(message)
+
+
+def _download_kind_label(kind: str) -> str:
+    return "视频" if kind == "video" else "音频"
 
 
 def _candidate_score(url: str, item: dict, supported: bool) -> int:
@@ -921,7 +1058,7 @@ def _probe_notes(before: dict, after: dict, candidates: list[dict]) -> list[str]
     if any(str(item.get("currentSrc") or "").startswith("blob:") for item in media):
         notes.append("页面媒体是 blob: 源；如果候选里没有 m3u8/mpd/mp4，请先刷新或重新播放后再探测。")
     if any(item.get("source") == "yt-dlp" for item in candidates):
-        notes.append("检测到 YouTube 页面；已加入 yt-dlp 页面提取候选，适合处理 blob/MSE 自适应流。")
+        notes.append("检测到可由 yt-dlp 处理的平台页面；已加入页面提取候选，适合处理 blob/MSE 自适应流。")
     if any(float(item.get("playbackRate") or 1) != 1 for item in media):
         notes.append("页面正在倍速播放；候选媒体会按原始 URL 转写，不使用倍速后的系统声音。")
     if not candidates:

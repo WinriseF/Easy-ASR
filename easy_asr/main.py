@@ -223,6 +223,20 @@ def transcribe_browser(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/browser/download")
+def download_browser_media(
+    endpoint: Annotated[str, Form()] = DEFAULT_DEBUG_ENDPOINT,
+    tab_id: Annotated[str, Form()] = "",
+    source_url: Annotated[str, Form()] = "",
+    kind: Annotated[str, Form()] = "audio",
+) -> dict:
+    try:
+        record = browser_manager.start_download(endpoint, tab_id, source_url, kind)
+        return record.snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/capture/start")
 def start_capture(
     device_index: Annotated[str, Form()] = "",
@@ -324,6 +338,16 @@ def download(job_id: str, format_name: str) -> FileResponse:
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="output not found")
     return FileResponse(path, filename=path.name)
+
+
+@app.get("/api/browser/imports/{import_id}/download")
+def download_browser_import(import_id: str) -> FileResponse:
+    record = browser_manager.get_import(import_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="browser import not found")
+    if not record.media_path.exists():
+        raise HTTPException(status_code=404, detail="media output not found")
+    return FileResponse(record.media_path, filename=record.media_path.name)
 
 
 def _transcript_mode(value: str) -> str:

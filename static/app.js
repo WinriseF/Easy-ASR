@@ -59,6 +59,8 @@ const els = {
   browserListenSecondsInput: document.getElementById("browserListenSecondsInput"),
   browserCandidateSelect: document.getElementById("browserCandidateSelect"),
   transcribeBrowserButton: document.getElementById("transcribeBrowserButton"),
+  downloadAudioButton: document.getElementById("downloadAudioButton"),
+  downloadVideoButton: document.getElementById("downloadVideoButton"),
   browserStatusText: document.getElementById("browserStatusText"),
   engineSelect: document.getElementById("engineSelect"),
   modelNameInput: document.getElementById("modelNameInput"),
@@ -411,6 +413,8 @@ function renderBrowserCandidates(candidates = [], notes = []) {
     option.textContent = "先探测媒体源";
     els.browserCandidateSelect.appendChild(option);
     els.transcribeBrowserButton.disabled = true;
+    els.downloadAudioButton.disabled = true;
+    els.downloadVideoButton.disabled = true;
     if (notes.length) {
       els.browserStatusText.textContent = notes[0];
     }
@@ -430,6 +434,8 @@ function renderBrowserCandidates(candidates = [], notes = []) {
   const firstSupported = candidates.find((candidate) => candidate.recommended) || candidates.find((candidate) => candidate.supported);
   els.browserCandidateSelect.value = firstSupported ? firstSupported.url : "";
   els.transcribeBrowserButton.disabled = !firstSupported;
+  els.downloadAudioButton.disabled = !firstSupported;
+  els.downloadVideoButton.disabled = !firstSupported;
   const usableCount = candidates.filter((candidate) => candidate.supported).length;
   els.browserStatusText.textContent = firstSupported
     ? `可用 ${usableCount} 个，已选择 ${formatCandidateDuration(firstSupported.duration_seconds)}`
@@ -445,6 +451,8 @@ function formatCandidateDuration(value) {
 function updateBrowserCandidateState() {
   const candidate = state.browserCandidates.find((item) => item.url === els.browserCandidateSelect.value);
   els.transcribeBrowserButton.disabled = !candidate || !candidate.supported;
+  els.downloadAudioButton.disabled = !candidate || !candidate.supported;
+  els.downloadVideoButton.disabled = !candidate || !candidate.supported;
   if (candidate?.reason) {
     els.browserStatusText.textContent = candidate.reason;
   }
@@ -797,6 +805,8 @@ async function probeBrowserMedia() {
   }
   els.probeBrowserButton.disabled = true;
   els.transcribeBrowserButton.disabled = true;
+  els.downloadAudioButton.disabled = true;
+  els.downloadVideoButton.disabled = true;
   els.browserStatusText.textContent = "探测并验证中";
   try {
     const form = new FormData();
@@ -823,6 +833,8 @@ async function transcribeBrowserMedia() {
     return;
   }
   els.transcribeBrowserButton.disabled = true;
+  els.downloadAudioButton.disabled = true;
+  els.downloadVideoButton.disabled = true;
   els.browserStatusText.textContent = "提取中";
   try {
     const form = new FormData();
@@ -835,8 +847,33 @@ async function transcribeBrowserMedia() {
     log("浏览器原始媒体正在提取");
   } catch (error) {
     els.browserStatusText.textContent = "提交失败";
-    els.transcribeBrowserButton.disabled = false;
+    updateBrowserCandidateState();
     log(`浏览器原源转写失败: ${cleanError(error)}`);
+  }
+}
+
+async function downloadBrowserMedia(kind) {
+  const sourceUrl = els.browserCandidateSelect.value;
+  if (!sourceUrl) {
+    log("没有可下载的浏览器媒体源");
+    return;
+  }
+  els.downloadAudioButton.disabled = true;
+  els.downloadVideoButton.disabled = true;
+  els.browserStatusText.textContent = kind === "video" ? "提取视频中" : "提取音频中";
+  try {
+    const form = new FormData();
+    form.append("endpoint", els.browserEndpointInput.value.trim());
+    form.append("tab_id", els.browserTabSelect.value);
+    form.append("source_url", sourceUrl);
+    form.append("kind", kind);
+    const record = await api("/api/browser/download", { method: "POST", body: form });
+    state.activeBrowserImport = record;
+    log(kind === "video" ? "浏览器视频正在提取" : "浏览器音频正在提取");
+  } catch (error) {
+    els.browserStatusText.textContent = "下载提交失败";
+    updateBrowserCandidateState();
+    log(`浏览器媒体下载失败: ${cleanError(error)}`);
   }
 }
 
@@ -845,7 +882,12 @@ async function refreshBrowserImport(importId) {
   state.activeBrowserImport = record;
   logBrowserImportEvents(record);
   els.browserStatusText.textContent = browserImportStatusText(record);
-  if (record.status === "submitted" && record.job_id) {
+  if (record.status === "downloaded") {
+    state.activeBrowserImport = null;
+    updateBrowserCandidateState();
+    window.location.href = `/api/browser/imports/${record.id}/download`;
+    log(`浏览器媒体已准备下载${record.duration_seconds ? `，时长 ${formatTime(record.duration_seconds)}` : ""}`);
+  } else if (record.status === "submitted" && record.job_id) {
     state.activeBrowserImport = null;
     log(`浏览器媒体已提交转写队列${record.duration_seconds ? `，音频时长 ${formatTime(record.duration_seconds)}` : ""}`);
     await refreshJobs();
@@ -870,6 +912,9 @@ function browserImportStatusText(record) {
   }
   if (record.status === "submitted") {
     return duration ? `已提交 ${duration}` : "已提交";
+  }
+  if (record.status === "downloaded") {
+    return duration ? `可下载 ${duration}` : "可下载";
   }
   if (record.status === "failed") {
     return "失败";
@@ -934,6 +979,8 @@ function bindEvents() {
   els.refreshBrowserTabsButton.addEventListener("click", loadBrowserTabs);
   els.probeBrowserButton.addEventListener("click", probeBrowserMedia);
   els.transcribeBrowserButton.addEventListener("click", transcribeBrowserMedia);
+  els.downloadAudioButton.addEventListener("click", () => downloadBrowserMedia("audio"));
+  els.downloadVideoButton.addEventListener("click", () => downloadBrowserMedia("video"));
   els.browserCandidateSelect.addEventListener("change", updateBrowserCandidateState);
   els.reloadButton.addEventListener("click", loadAll);
   els.refreshFilesButton.addEventListener("click", loadAll);
