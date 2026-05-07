@@ -4,13 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Easy-ASR</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260507-download1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260507-model-logo1" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark">EA</div>
+          <div class="brand-mark">
+            <img src="/static/logo-mark.png?v=20260507" alt="" />
+          </div>
           <div>
             <h1>Easy-ASR</h1>
             <p>本地语音转写台</p>
@@ -249,9 +251,17 @@
             <select id="engineSelect"></select>
           </label>
           <label class="field">
+            <span>模型预设</span>
+            <select id="modelChoiceSelect"></select>
+          </label>
+          <label class="field">
             <span>模型名</span>
             <input id="modelNameInput" type="text" placeholder="默认模型" />
           </label>
+          <button class="ghost-button full-width" id="downloadModelButton" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></svg>
+            下载/预加载模型
+          </button>
           <label class="field">
             <span>语言</span>
             <select id="languageSelect">
@@ -342,6 +352,6 @@
       </div>
     </footer>
 
-    <script src="/static/app.js?v=20260507-download1" defer></script>
+    <script src="/static/app.js?v=20260507-model-logo1" defer></script>
   </body>
 </html>

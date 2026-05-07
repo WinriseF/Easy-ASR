@@ -63,7 +63,9 @@ const els = {
   downloadVideoButton: document.getElementById("downloadVideoButton"),
   browserStatusText: document.getElementById("browserStatusText"),
   engineSelect: document.getElementById("engineSelect"),
+  modelChoiceSelect: document.getElementById("modelChoiceSelect"),
   modelNameInput: document.getElementById("modelNameInput"),
+  downloadModelButton: document.getElementById("downloadModelButton"),
   languageSelect: document.getElementById("languageSelect"),
   transcriptModeSelect: document.getElementById("transcriptModeSelect"),
   modelNote: document.getElementById("modelNote"),
@@ -318,10 +320,58 @@ function updateModelNote() {
   const model = state.models.find((item) => item.id === els.engineSelect.value);
   if (!model) {
     els.modelNote.textContent = "没有可用模型。";
+    renderModelChoices(null);
+    els.downloadModelButton.disabled = true;
     return;
   }
+  renderModelChoices(model);
   els.modelNameInput.placeholder = model.default_model || "默认模型";
   els.modelNote.textContent = model.available ? model.description : model.install_hint;
+  els.downloadModelButton.disabled = !model.available;
+}
+
+function renderModelChoices(model) {
+  const current = els.modelNameInput.value.trim();
+  els.modelChoiceSelect.innerHTML = "";
+  if (!model) {
+    els.modelChoiceSelect.innerHTML = '<option value="">无可用预设</option>';
+    syncUiSelect(els.modelChoiceSelect);
+    return;
+  }
+  const defaultOption = document.createElement("option");
+  defaultOption.value = model.default_model || "";
+  defaultOption.textContent = `默认：${model.default_model || "引擎默认"}`;
+  els.modelChoiceSelect.appendChild(defaultOption);
+  for (const choice of model.model_choices || []) {
+    const option = document.createElement("option");
+    option.value = choice.name || "";
+    option.textContent = choice.label || choice.name || "模型";
+    els.modelChoiceSelect.appendChild(option);
+  }
+  const customOption = document.createElement("option");
+  customOption.value = "__custom__";
+  customOption.textContent = "自定义输入";
+  els.modelChoiceSelect.appendChild(customOption);
+
+  const values = [...els.modelChoiceSelect.options].map((option) => option.value);
+  if (current && values.includes(current)) {
+    els.modelChoiceSelect.value = current;
+  } else if (current) {
+    els.modelChoiceSelect.value = "__custom__";
+  } else {
+    els.modelChoiceSelect.value = model.default_model || "";
+    els.modelNameInput.value = model.default_model || "";
+  }
+  syncUiSelect(els.modelChoiceSelect);
+}
+
+function applyModelChoice() {
+  const value = els.modelChoiceSelect.value;
+  if (value === "__custom__") {
+    els.modelNameInput.focus();
+    return;
+  }
+  els.modelNameInput.value = value;
 }
 
 function renderFiles() {
@@ -957,6 +1007,38 @@ async function saveTerminology() {
   }
 }
 
+async function preloadModel() {
+  els.downloadModelButton.disabled = true;
+  try {
+    const form = new FormData();
+    form.append("engine_id", els.engineSelect.value);
+    form.append("model_name", els.modelNameInput.value.trim());
+    form.append("cpu_threads", els.cpuThreadsInput.value);
+    form.append("compute_type", els.computeTypeSelect.value);
+    const record = await api("/api/models/preload", { method: "POST", body: form });
+    log(`模型下载/预加载已开始: ${record.model_name || record.engine_id}`);
+    await pollModelPreload(record.id);
+  } catch (error) {
+    log(`模型下载/预加载失败: ${cleanError(error)}`);
+  } finally {
+    els.downloadModelButton.disabled = false;
+  }
+}
+
+async function pollModelPreload(downloadId) {
+  for (;;) {
+    await delay(1500);
+    const record = await api(`/api/models/downloads/${downloadId}`);
+    if (record.status === "completed") {
+      log(`模型已就绪: ${record.model_name || record.engine_id}`);
+      return;
+    }
+    if (record.status === "failed") {
+      throw new Error(record.error || "模型下载/预加载失败");
+    }
+  }
+}
+
 async function copyTranscript() {
   const segments = state.activeJob?.segments || [];
   const text = segments.map((segment) => segment.text).join("\n\n").trim();
@@ -985,6 +1067,8 @@ function bindEvents() {
   els.reloadButton.addEventListener("click", loadAll);
   els.refreshFilesButton.addEventListener("click", loadAll);
   els.engineSelect.addEventListener("change", updateModelNote);
+  els.modelChoiceSelect.addEventListener("change", applyModelChoice);
+  els.downloadModelButton.addEventListener("click", preloadModel);
   els.saveTerminologyButton.addEventListener("click", saveTerminology);
   els.copyTranscriptButton.addEventListener("click", copyTranscript);
   els.audioFileInput.addEventListener("change", () => {
@@ -1044,6 +1128,10 @@ function cleanError(error) {
   } catch {
     return error.message;
   }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 initUiSelects();

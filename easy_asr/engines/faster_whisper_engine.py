@@ -32,6 +32,13 @@ class FasterWhisperEngine:
             capabilities=["cpu", "int8", "timestamps", "vad", "terminology-prompt", "quality-presets"],
             install_hint="安装 requirements-asr-faster-whisper.txt 后可用。",
             default_model="small",
+            model_choices=[
+                {"name": "tiny", "label": "tiny（最快）"},
+                {"name": "base", "label": "base"},
+                {"name": "small", "label": "small（推荐）"},
+                {"name": "medium", "label": "medium"},
+                {"name": "large-v3", "label": "large-v3（质量高）"},
+            ],
         )
 
     def transcribe(
@@ -132,6 +139,12 @@ class FasterWhisperEngine:
             duration_seconds=info.duration or probe_duration(input_path),
             segments=segments,
         )
+
+    def preload(self, options: EngineOptions) -> None:
+        from faster_whisper import WhisperModel
+
+        model_name = options.model_name or "small"
+        self._load_model(WhisperModel, model_name, options)
 
     def _load_model(self, model_cls, model_name: str, options: EngineOptions):
         cache_key = f"{self.id}:{model_name}:cpu:{options.compute_type}:{options.cpu_threads}"

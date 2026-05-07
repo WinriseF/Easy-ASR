@@ -46,6 +46,7 @@ class EngineDescriptor:
     capabilities: list[str]
     install_hint: str = ""
     default_model: str = ""
+    model_choices: list[dict] = field(default_factory=list)
 
 
 @dataclass

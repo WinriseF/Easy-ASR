@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated
 
@@ -30,6 +33,9 @@ browser_manager.ensure_dirs()
 
 app = FastAPI(title="Easy-ASR", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+model_download_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-download")
+model_download_lock = threading.RLock()
+model_downloads: dict[str, dict] = {}
 
 
 @app.get("/")
@@ -50,6 +56,42 @@ def health() -> dict:
 @app.get("/api/models")
 def models() -> dict:
     return {"models": [descriptor.__dict__ for descriptor in manager.registry.descriptors()]}
+
+
+@app.get("/api/models/downloads/{download_id}")
+def model_download(download_id: str) -> dict:
+    with model_download_lock:
+        record = model_downloads.get(download_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="model download not found")
+        return dict(record)
+
+
+@app.post("/api/models/preload")
+def preload_model(
+    engine_id: Annotated[str, Form()] = "funasr-sensevoice",
+    model_name: Annotated[str, Form()] = "",
+    cpu_threads: Annotated[int, Form()] = 4,
+    compute_type: Annotated[str, Form()] = "int8",
+) -> dict:
+    options = EngineOptions(
+        engine_id=engine_id,
+        model_name=model_name,
+        cpu_threads=max(1, min(int(cpu_threads), 32)),
+        compute_type=compute_type,
+    )
+    download_id = uuid.uuid4().hex[:12]
+    record = {
+        "id": download_id,
+        "status": "queued",
+        "engine_id": options.engine_id,
+        "model_name": options.model_name or _default_model_name(options.engine_id),
+        "error": "",
+    }
+    with model_download_lock:
+        model_downloads[download_id] = record
+    model_download_executor.submit(_run_model_preload, download_id, options)
+    return dict(record)
 
 
 @app.get("/api/files")
@@ -352,6 +394,28 @@ def download_browser_import(import_id: str) -> FileResponse:
 
 def _transcript_mode(value: str) -> str:
     return value if value in {"whole", "chunk", "sentence"} else "whole"
+
+
+def _default_model_name(engine_id: str) -> str:
+    for descriptor in manager.registry.descriptors():
+        if descriptor.id == engine_id:
+            return descriptor.default_model
+    return ""
+
+
+def _run_model_preload(download_id: str, options: EngineOptions) -> None:
+    with model_download_lock:
+        if download_id in model_downloads:
+            model_downloads[download_id]["status"] = "running"
+    try:
+        manager.registry.preload(options)
+        with model_download_lock:
+            model_downloads[download_id]["status"] = "completed"
+    except Exception as exc:
+        with model_download_lock:
+            if download_id in model_downloads:
+                model_downloads[download_id]["status"] = "failed"
+                model_downloads[download_id]["error"] = str(exc)
 
 
 @app.get("/api/terminology")

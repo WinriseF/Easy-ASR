@@ -37,6 +37,10 @@ class FunASRSenseVoiceEngine:
             capabilities=["cpu", "vad", "itn", "rich-text", "terminology-postprocess"],
             install_hint="安装 requirements-asr-funasr.txt 后可用。",
             default_model="iic/SenseVoiceSmall",
+            model_choices=[
+                {"name": "iic/SenseVoiceSmall", "label": "SenseVoiceSmall（推荐）"},
+                {"name": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch", "label": "Paraformer 中文 large"},
+            ],
         )
 
     def transcribe(
@@ -154,6 +158,12 @@ class FunASRSenseVoiceEngine:
             duration_seconds=probe_duration(input_path),
             segments=segments,
         )
+
+    def preload(self, options: EngineOptions) -> None:
+        from funasr import AutoModel
+
+        model_name = options.model_name or "iic/SenseVoiceSmall"
+        self._load_model(AutoModel, model_name)
 
     def _load_model(self, auto_model, model_name: str):
         cache_key = f"{self.id}:{model_name}:cpu"

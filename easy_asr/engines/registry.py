@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from easy_asr.engines.base import EngineDescriptor
+from easy_asr.engines.base import EngineDescriptor, EngineOptions
 from easy_asr.engines.faster_whisper_engine import FasterWhisperEngine
 from easy_asr.engines.funasr_engine import FunASRSenseVoiceEngine
 
@@ -28,3 +28,8 @@ class EngineRegistry:
             raise RuntimeError(f"{descriptor.label} 当前不可用。{descriptor.install_hint}")
         return engine_type(self.base_dir)
 
+    def preload(self, options: EngineOptions) -> None:
+        engine = self.create(options.engine_id)
+        if not hasattr(engine, "preload"):
+            raise RuntimeError(f"{options.engine_id} 不支持模型预下载。")
+        engine.preload(options)
