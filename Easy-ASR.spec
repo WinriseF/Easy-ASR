@@ -55,19 +55,6 @@ if default_terms.exists():
     ]
 
 
-# FunASR 模型：打包环境必须离线加载，避免在目标机器触发 ModelScope HTTPS 下载
-modelscope_iic_dir = project_dir / "models" / "modelscope" / "models" / "iic"
-for model_dir_name in [
-    "SenseVoiceSmall",
-    "speech_fsmn_vad_zh-cn-16k-common-pytorch",
-]:
-    model_dir = modelscope_iic_dir / model_dir_name
-    if model_dir.exists():
-        datas += [
-            (str(model_dir), f"models/modelscope/models/iic/{model_dir_name}"),
-        ]
-
-
 # ffmpeg / ffprobe：作为普通数据文件带进去，不让 PyInstaller 当二进制依赖扫描
 ffmpeg_dir = project_dir / "vendor" / "ffmpeg" / "bin"
 for name in ["ffmpeg.exe", "ffprobe.exe"]:
@@ -103,6 +90,7 @@ optional_packages = [
     # faster-whisper
     "faster_whisper",
     "ctranslate2",
+    "huggingface_hub",
 
     # 浏览器调试 / 原始媒体
     "websocket",
@@ -138,6 +126,7 @@ metadata_distributions = [
     "torchaudio",
     "faster-whisper",
     "ctranslate2",
+    "huggingface-hub",
     "websocket-client",
     "yt-dlp",
     "PyAudioWPatch",

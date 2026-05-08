@@ -515,6 +515,8 @@ def _run_model_preload(download_id: str, options: EngineOptions) -> None:
         with model_download_lock:
             model_downloads[download_id]["status"] = "completed"
     except Exception as exc:
+        LOGGER.exception("model_preload_failed")
+        flush_logging()
         with model_download_lock:
             if download_id in model_downloads:
                 model_downloads[download_id]["status"] = "failed"

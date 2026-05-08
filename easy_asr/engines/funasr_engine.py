@@ -29,6 +29,10 @@ _MODELSCOPE_MODEL_ALIASES = {
     ),
 }
 
+_FUNASR_HF_MODEL_ALIASES = {
+    "iic/SenseVoiceSmall": "FunAudioLLM/SenseVoiceSmall",
+}
+
 
 class FunASRSenseVoiceEngine:
     id = "funasr-sensevoice"
@@ -248,19 +252,6 @@ class FunASRSenseVoiceEngine:
         cache_key = f"{self.id}:{model_ref}:{vad_ref}:cpu"
         with _MODEL_LOCK:
             if cache_key not in _MODEL_CACHE:
-                if getattr(sys, "frozen", False):
-                    missing = []
-                    if _is_remote_model_name(model_name) and model_path is None:
-                        missing.append(model_name)
-                    if vad_path is None:
-                        missing.append("iic/speech_fsmn_vad_zh-cn-16k-common-pytorch")
-                    if missing:
-                        raise RuntimeError(
-                            "打包环境缺少本地 FunASR 模型，已阻止在线下载以避免 OpenSSL 原生崩溃。"
-                            f"缺少: {', '.join(sorted(set(missing)))}。"
-                            "请重新打包并确认 models/modelscope/models/iic 下包含对应模型目录。"
-                        )
-
                 log_debug(
                     LOGGER,
                     "funasr_model_load_start",
@@ -275,26 +266,67 @@ class FunASRSenseVoiceEngine:
                     frozen=bool(getattr(sys, "frozen", False)),
                 )
                 flush_logging()
-                try:
-                    _MODEL_CACHE[cache_key] = auto_model(
-                        model=model_ref,
-                        trust_remote_code=True,
-                        vad_model=vad_ref,
-                        vad_kwargs={"max_single_segment_time": 30000},
-                        device="cpu",
-                        disable_update=True,
+                errors: list[str] = []
+                for candidate in _funasr_load_candidates(model_name, model_ref, model_path, vad_ref, vad_path):
+                    log_debug(
+                        LOGGER,
+                        "funasr_model_load_candidate_start",
+                        requested_model=model_name,
+                        candidate_source=candidate["source"],
+                        candidate_model=candidate["model"],
+                        candidate_vad_model=candidate["vad_model"],
+                        hf_endpoint=candidate.get("hf_endpoint") or "",
                     )
-                except Exception as exc:
+                    flush_logging()
+                    previous_hf_endpoint = os.environ.get("HF_ENDPOINT")
+                    hf_endpoint = candidate.get("hf_endpoint")
+                    if hf_endpoint:
+                        os.environ["HF_ENDPOINT"] = str(hf_endpoint)
+                    try:
+                        _MODEL_CACHE[cache_key] = auto_model(
+                            model=candidate["model"],
+                            trust_remote_code=True,
+                            vad_model=candidate["vad_model"],
+                            vad_kwargs={"max_single_segment_time": 30000},
+                            device="cpu",
+                            disable_update=True,
+                            **candidate["extra_kwargs"],
+                        )
+                        break
+                    except Exception as exc:
+                        errors.append(f"{candidate['source']}: {exc}")
+                        log_warning(
+                            LOGGER,
+                            "funasr_model_load_candidate_failed",
+                            requested_model=model_name,
+                            candidate_source=candidate["source"],
+                            candidate_model=candidate["model"],
+                            candidate_vad_model=candidate["vad_model"],
+                            hf_endpoint=candidate.get("hf_endpoint") or "",
+                            error=repr(exc),
+                        )
+                        flush_logging()
+                    finally:
+                        if previous_hf_endpoint is None:
+                            os.environ.pop("HF_ENDPOINT", None)
+                        else:
+                            os.environ["HF_ENDPOINT"] = previous_hf_endpoint
+
+                if cache_key not in _MODEL_CACHE:
+                    error = RuntimeError(
+                        "FunASR 模型下载/加载失败，已尝试 ModelScope 与 HuggingFace 镜像候选: "
+                        + "; ".join(errors[-4:])
+                    )
                     log_warning(
                         LOGGER,
                         "funasr_model_load_failed",
                         requested_model=model_name,
                         resolved_model=model_ref,
                         resolved_vad_model=vad_ref,
-                        error=repr(exc),
+                        error=repr(error),
                     )
                     flush_logging()
-                    raise
+                    raise error
                 log_debug(
                     LOGGER,
                     "funasr_model_load_completed",
@@ -356,6 +388,61 @@ def _looks_like_model_dir(path: Path) -> bool:
         return False
     markers = ["configuration.json", "config.yaml", "model.pt", "am.mvn"]
     return any((path / marker).exists() for marker in markers)
+
+
+def _funasr_load_candidates(
+    model_name: str,
+    model_ref: str,
+    model_path: Path | None,
+    vad_ref: str,
+    vad_path: Path | None,
+) -> list[dict[str, object]]:
+    candidates: list[dict[str, object]] = [
+        {
+            "source": "modelscope/local",
+            "model": model_ref,
+            "vad_model": vad_ref,
+            "extra_kwargs": {},
+            "hf_endpoint": "",
+        }
+    ]
+
+    raw = str(model_name or "").strip() or "iic/SenseVoiceSmall"
+    hf_model = None
+    if model_path is None:
+        hf_model = _FUNASR_HF_MODEL_ALIASES.get(raw) or _FUNASR_HF_MODEL_ALIASES.get(model_ref)
+    if hf_model is None:
+        return candidates
+
+    for endpoint in _huggingface_endpoints():
+        label = endpoint or "default"
+        candidates.append(
+            {
+                "source": f"huggingface:{label}",
+                "model": hf_model,
+                "vad_model": vad_ref if vad_path is not None else "fsmn-vad",
+                "extra_kwargs": {"hub": "hf"},
+                "hf_endpoint": endpoint or "",
+            }
+        )
+    return candidates
+
+
+def _huggingface_endpoints() -> list[str | None]:
+    values: list[str | None] = []
+    configured = os.environ.get("EASY_ASR_HF_ENDPOINTS", "")
+    if configured:
+        values.extend(item.strip() or None for item in configured.split(","))
+    env_endpoint = os.environ.get("HF_ENDPOINT", "").strip()
+    if env_endpoint:
+        values.append(env_endpoint)
+    values.extend(["https://hf-mirror.com", "https://huggingface.co", None])
+    unique: list[str | None] = []
+    for value in values:
+        normalized = value.rstrip("/") if isinstance(value, str) else value
+        if normalized not in unique:
+            unique.append(normalized)
+    return unique
 
 
 def _is_remote_model_name(value: str) -> bool:
