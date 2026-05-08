@@ -5,7 +5,7 @@ const state = {
   captureDevices: [],
   browserTabs: [],
   browserCandidates: [],
-  sourceMode: "browser",
+  sourceMode: "file",
   activeJob: null,
   activeCapture: null,
   activeBrowserImport: null,
@@ -565,11 +565,16 @@ function renderCounts() {
 }
 
 function setSourceMode(mode) {
-  state.sourceMode = mode === "capture" ? "capture" : "browser";
+  state.sourceMode = ["file", "capture", "browser"].includes(mode) ? mode : "file";
   renderSourceMode();
 }
 
 function renderSourceMode() {
+  const titles = {
+    file: "录音文件",
+    capture: "系统播放",
+    browser: "调试浏览器",
+  };
   for (const button of els.sourceModeButtons) {
     const active = button.dataset.sourceMode === state.sourceMode;
     button.classList.toggle("is-active", active);
@@ -578,7 +583,7 @@ function renderSourceMode() {
   for (const pane of els.sourcePanes) {
     pane.hidden = pane.dataset.sourcePane !== state.sourceMode;
   }
-  els.sourcePanelTitle.textContent = state.sourceMode === "browser" ? "调试浏览器" : "系统播放";
+  els.sourcePanelTitle.textContent = titles[state.sourceMode] || "录音文件";
 }
 
 async function setActiveJob(jobId) {
@@ -1050,6 +1055,12 @@ async function copyTranscript() {
   log("转写文本已复制");
 }
 
+function updateDropText() {
+  const file = els.audioFileInput.files[0];
+  els.dropTitle.textContent = file ? file.name : "拖入或选择 MP3/MP4";
+  els.dropSubtitle.textContent = file ? `${formatBytes(file.size)} · 准备提交` : "也可以直接转写 input 目录中的文件";
+}
+
 function bindEvents() {
   els.startButton.addEventListener("click", submitJob);
   for (const button of els.sourceModeButtons) {
@@ -1072,9 +1083,17 @@ function bindEvents() {
   els.saveTerminologyButton.addEventListener("click", saveTerminology);
   els.copyTranscriptButton.addEventListener("click", copyTranscript);
   els.audioFileInput.addEventListener("change", () => {
-    const file = els.audioFileInput.files[0];
-    els.dropTitle.textContent = file ? file.name : "拖入或选择 MP3/MP4";
-    els.dropSubtitle.textContent = file ? `${formatBytes(file.size)} · 准备提交` : "也可以直接转写 input 目录中的文件";
+    if (els.audioFileInput.files[0]) {
+      els.existingFileSelect.value = "";
+      syncUiSelect(els.existingFileSelect);
+    }
+    updateDropText();
+  });
+  els.existingFileSelect.addEventListener("change", () => {
+    if (els.existingFileSelect.value) {
+      els.audioFileInput.value = "";
+      updateDropText();
+    }
   });
   for (const eventName of ["dragenter", "dragover"]) {
     els.dropZone.addEventListener(eventName, (event) => {

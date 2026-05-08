@@ -297,7 +297,7 @@ svg {
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(300px, 520px);
+  grid-template-columns: minmax(220px, 1fr) auto var(--control-h);
   align-items: center;
   gap: 14px;
   min-height: 64px;
@@ -358,7 +358,8 @@ svg {
 
 .topbar-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--control-h);
+  grid-template-columns: var(--control-h);
+  justify-content: end;
   gap: 8px;
   min-width: 0;
 }
@@ -527,7 +528,6 @@ select.native-select-hidden {
   padding: 0;
 }
 
-.upload-band,
 .source-panel,
 .active-job,
 .transcript-panel,
@@ -536,13 +536,6 @@ select.native-select-hidden {
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-}
-
-.upload-band {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 156px;
-  gap: 12px;
-  padding: 10px;
 }
 
 .drop-zone {
@@ -660,6 +653,17 @@ select.native-select-hidden {
 
 .source-pane[hidden] {
   display: none;
+}
+
+.file-input-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(240px, 360px) 156px;
+  gap: 12px;
+  align-items: end;
+}
+
+.file-select-field {
+  min-width: 0;
 }
 
 .capture-actions {
@@ -1062,7 +1066,7 @@ select.native-select-hidden {
   }
 
   .topbar {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto var(--control-h);
   }
 
   .topbar-metrics {
@@ -1070,14 +1074,10 @@ select.native-select-hidden {
   }
 
   .topbar-actions {
-    grid-column: 1 / -1;
-    width: 100%;
+    justify-content: end;
   }
 
-  .upload-band {
-    grid-template-columns: 1fr;
-  }
-
+  .file-input-grid,
   .capture-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -1113,6 +1113,7 @@ select.native-select-hidden {
     flex-direction: column;
   }
 
+  .file-input-grid,
   .capture-grid {
     grid-template-columns: 1fr;
   }
