@@ -18,6 +18,7 @@ from easy_asr.browser_debug import (
     DebugBrowserManager,
 )
 from easy_asr.capture import PlaybackCaptureManager
+from easy_asr.debug_runtime import flush_logging, get_logger, log_debug, shorten
 from easy_asr.engines.base import EngineOptions
 from easy_asr.jobs import JobManager, event_payload, parse_formats
 
@@ -45,6 +46,7 @@ def _resource_base_dir() -> Path:
 BASE_DIR = _runtime_base_dir()
 RESOURCE_DIR = _resource_base_dir()
 STATIC_DIR = RESOURCE_DIR / "static"
+LOGGER = get_logger(__name__)
 
 manager = JobManager(BASE_DIR)
 manager.ensure_dirs()
@@ -147,8 +149,13 @@ def capture_session(session_id: str) -> dict:
 @app.get("/api/browser/tabs")
 def browser_tabs(endpoint: str = DEFAULT_DEBUG_ENDPOINT) -> dict:
     try:
-        return {"available": True, "install_hint": "", "tabs": browser_manager.list_tabs(endpoint)}
+        log_debug(LOGGER, "api_browser_tabs_start", endpoint=endpoint)
+        payload = {"available": True, "install_hint": "", "tabs": browser_manager.list_tabs(endpoint)}
+        log_debug(LOGGER, "api_browser_tabs_ok", endpoint=endpoint, tab_count=len(payload["tabs"]))
+        return payload
     except Exception as exc:
+        LOGGER.exception("api_browser_tabs_failed")
+        flush_logging()
         return {"available": False, "install_hint": str(exc), "tabs": []}
 
 
@@ -228,13 +235,32 @@ def probe_browser(
     reload_page: Annotated[bool, Form()] = False,
 ) -> dict:
     try:
-        return browser_manager.probe_tab(
+        log_debug(
+            LOGGER,
+            "api_browser_probe_start",
+            endpoint=endpoint,
+            tab_id=tab_id,
+            listen_seconds=listen_seconds,
+            reload_page=reload_page,
+        )
+        payload = browser_manager.probe_tab(
             endpoint=endpoint,
             tab_id=tab_id,
             listen_seconds=max(1, min(int(listen_seconds), 15)),
             reload_page=reload_page,
         )
+        log_debug(
+            LOGGER,
+            "api_browser_probe_ok",
+            endpoint=endpoint,
+            tab_id=tab_id,
+            candidate_count=len(payload.get("candidates") or []),
+            recommended_url=shorten(payload.get("recommended_url", ""), 200),
+        )
+        return payload
     except Exception as exc:
+        LOGGER.exception("api_browser_probe_failed")
+        flush_logging()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -244,8 +270,21 @@ def launch_browser(
     start_url: Annotated[str, Form()] = DEFAULT_BROWSER_HOME_URL,
 ) -> dict:
     try:
-        return browser_manager.launch_browser(endpoint=endpoint, start_url=start_url)
+        log_debug(LOGGER, "api_browser_launch_start", endpoint=endpoint, start_url=start_url)
+        payload = browser_manager.launch_browser(endpoint=endpoint, start_url=start_url)
+        log_debug(
+            LOGGER,
+            "api_browser_launch_ok",
+            endpoint=endpoint,
+            start_url=start_url,
+            already_running=payload.get("already_running"),
+            executable=payload.get("executable", ""),
+            tab_count=len(payload.get("tabs") or []),
+        )
+        return payload
     except Exception as exc:
+        LOGGER.exception("api_browser_launch_failed")
+        flush_logging()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -268,6 +307,17 @@ def transcribe_browser(
     output_formats: Annotated[str, Form()] = "txt,srt,vtt,tsv,json",
 ) -> dict:
     try:
+        log_debug(
+            LOGGER,
+            "api_browser_transcribe_start",
+            endpoint=endpoint,
+            tab_id=tab_id,
+            source_url=shorten(source_url, 500),
+            engine_id=engine_id,
+            model_name=model_name,
+            language=language,
+            compute_type=compute_type,
+        )
         options = EngineOptions(
             engine_id=engine_id,
             model_name=model_name,
@@ -282,8 +332,19 @@ def transcribe_browser(
             transcript_mode=_transcript_mode(transcript_mode),
         )
         record = browser_manager.start_transcribe(endpoint, tab_id, source_url, options, parse_formats(output_formats))
+        log_debug(
+            LOGGER,
+            "api_browser_transcribe_queued",
+            import_id=record.id,
+            endpoint=endpoint,
+            tab_id=tab_id,
+            source_url=shorten(source_url, 500),
+            media_path=record.media_path,
+        )
         return record.snapshot()
     except Exception as exc:
+        LOGGER.exception("api_browser_transcribe_failed")
+        flush_logging()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -295,9 +356,29 @@ def download_browser_media(
     kind: Annotated[str, Form()] = "audio",
 ) -> dict:
     try:
+        log_debug(
+            LOGGER,
+            "api_browser_download_start",
+            endpoint=endpoint,
+            tab_id=tab_id,
+            source_url=shorten(source_url, 500),
+            kind=kind,
+        )
         record = browser_manager.start_download(endpoint, tab_id, source_url, kind)
+        log_debug(
+            LOGGER,
+            "api_browser_download_queued",
+            import_id=record.id,
+            endpoint=endpoint,
+            tab_id=tab_id,
+            source_url=shorten(source_url, 500),
+            kind=kind,
+            media_path=record.media_path,
+        )
         return record.snapshot()
     except Exception as exc:
+        LOGGER.exception("api_browser_download_failed")
+        flush_logging()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 
+from easy_asr.debug_runtime import flush_logging, get_logger, log_debug, shorten
+
 
 @dataclass(frozen=True)
 class AudioChunk:
@@ -17,15 +19,18 @@ class AudioChunk:
 
 _DURATION_CACHE: dict[tuple[str, int, int], float | None] = {}
 _DURATION_LOCK = Lock()
+LOGGER = get_logger(__name__)
 
 
 def ffmpeg_exe() -> str:
     configured = os.environ.get("EASY_ASR_FFMPEG_EXE")
     if configured and Path(configured).exists():
+        log_debug(LOGGER, "ffmpeg_resolved", source="env", path=configured)
         return configured
 
     found = shutil.which("ffmpeg")
     if found:
+        log_debug(LOGGER, "ffmpeg_resolved", source="path", path=found)
         return found
 
     raise RuntimeError("未找到 ffmpeg，请确认打包目录中包含 bin/ffmpeg.exe。")
@@ -34,10 +39,12 @@ def ffmpeg_exe() -> str:
 def ffprobe_exe() -> str:
     configured = os.environ.get("EASY_ASR_FFPROBE_EXE")
     if configured and Path(configured).exists():
+        log_debug(LOGGER, "ffprobe_resolved", source="env", path=configured)
         return configured
 
     found = shutil.which("ffprobe")
     if found:
+        log_debug(LOGGER, "ffprobe_resolved", source="path", path=found)
         return found
 
     raise RuntimeError("未找到 ffprobe，请确认打包目录中包含 bin/ffprobe.exe。")
@@ -94,7 +101,18 @@ def _probe_duration_uncached(path: Path) -> float | None:
             errors="replace",
         )
     except (OSError, subprocess.CalledProcessError):
+        LOGGER.exception("probe_duration_subprocess_failed")
+        flush_logging()
         return None
+    log_debug(
+        LOGGER,
+        "probe_duration_completed",
+        path=path,
+        returncode=completed.returncode,
+        stdout=shorten(completed.stdout.strip(), 200),
+        stderr=shorten(completed.stderr.strip(), 200),
+    )
+    flush_logging()
     value = completed.stdout.strip()
     if not value:
         return None
@@ -138,6 +156,15 @@ def split_audio_to_chunks(
             "1",
             output_pattern,
         ]
+        log_debug(
+            LOGGER,
+            "split_audio_to_chunks_running",
+            audio_path=audio_path,
+            chunk_dir=chunk_dir,
+            chunk_seconds=chunk_seconds,
+            cmd=cmd,
+        )
+        flush_logging()
         subprocess.run(cmd, check=True)
         existing_chunks = sorted(chunk_dir.glob("chunk_*.wav"))
 

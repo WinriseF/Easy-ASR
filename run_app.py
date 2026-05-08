@@ -8,6 +8,21 @@ from datetime import datetime
 from multiprocessing import freeze_support
 from pathlib import Path
 
+from easy_asr.debug_runtime import (
+    configure_debug_logging,
+    current_fault_path,
+    current_log_path,
+    flush_logging,
+    get_logger,
+    install_faulthandler,
+    log_debug,
+    runtime_snapshot,
+)
+
+DEBUG_LOG_PATH: Path | None = None
+FAULT_LOG_PATH: Path | None = None
+LOGGER = get_logger(__name__)
+
 def _runtime_base_dir() -> Path:
     """
     运行时可写目录：
@@ -31,11 +46,27 @@ def _bundle_base_dir() -> Path:
 
 
 def _warm_up_python_ssl() -> None:
+    info: dict[str, object] = {}
     try:
         import ssl
-        _ = ssl.OPENSSL_VERSION
-    except Exception:
-        pass
+        info["openssl_version"] = ssl.OPENSSL_VERSION
+        try:
+            info["default_verify_paths"] = ssl.get_default_verify_paths()._asdict()
+        except Exception as exc:
+            info["default_verify_paths_error"] = str(exc)
+    except Exception as exc:
+        info["ssl_import_error"] = str(exc)
+
+    try:
+        import certifi
+
+        info["certifi_version"] = getattr(certifi, "__version__", "")
+        info["certifi_where"] = certifi.where()
+    except Exception as exc:
+        info["certifi_error"] = str(exc)
+
+    log_debug(LOGGER, "ssl_runtime_probe", **info)
+    flush_logging()
 
 
 def _configure_bundled_ffmpeg() -> None:
@@ -57,7 +88,20 @@ def _configure_bundled_ffmpeg() -> None:
             os.environ["EASY_ASR_FFMPEG_EXE"] = str(ffmpeg)
             os.environ["EASY_ASR_FFPROBE_EXE"] = str(ffprobe)
             os.environ["EASY_ASR_FFMPEG_DIR"] = str(bin_dir)
+            log_debug(
+                LOGGER,
+                "bundled_ffmpeg_selected",
+                runtime_dir=runtime_dir,
+                bundle_dir=bundle_dir,
+                selected_dir=bin_dir,
+                ffmpeg=ffmpeg,
+                ffprobe=ffprobe,
+            )
+            flush_logging()
             return
+
+    log_debug(LOGGER, "bundled_ffmpeg_not_found", runtime_dir=runtime_dir, bundle_dir=bundle_dir, candidates=candidates)
+    flush_logging()
 
 
 def _print_banner() -> None:
@@ -91,6 +135,8 @@ CWD        : {Path.cwd()}
 RuntimeDir : {_runtime_base_dir()}
 BundleDir  : {_bundle_base_dir()}
 Python     : {sys.version}
+DebugLog   : {current_log_path()}
+FatalLog   : {current_fault_path()}
 
 ==================== Traceback ====================
 
@@ -103,6 +149,8 @@ Python     : {sys.version}
 
 def _report_exception(exc_type, exc_value, exc_traceback, title: str = "EASY-ASR 崩溃") -> None:
     detail = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    LOGGER.error("%s | %s", title, detail)
+    flush_logging()
 
     print("\n" + "=" * 80, file=sys.stderr)
     print(f"{title}", file=sys.stderr)
@@ -152,10 +200,17 @@ if __name__ == "__main__":
     _install_exception_hooks()
 
     try:
+        os.environ.setdefault("PYTHONFAULTHANDLER", "1")
+        DEBUG_LOG_PATH = configure_debug_logging()
+        FAULT_LOG_PATH = install_faulthandler()
+        log_debug(LOGGER, "process_bootstrap", debug_log_path=DEBUG_LOG_PATH, fault_log_path=FAULT_LOG_PATH, **runtime_snapshot())
+        flush_logging()
+
         freeze_support()
 
         runtime_dir = _runtime_base_dir()
         os.chdir(runtime_dir)
+        log_debug(LOGGER, "runtime_directory_changed", runtime_dir=runtime_dir, cwd=Path.cwd())
 
         _warm_up_python_ssl()
         _configure_bundled_ffmpeg()
@@ -163,6 +218,17 @@ if __name__ == "__main__":
 
         from easy_asr.main import app
         import uvicorn
+
+        log_debug(
+            LOGGER,
+            "uvicorn_starting",
+            host="127.0.0.1",
+            port=8765,
+            ffmpeg=os.environ.get("EASY_ASR_FFMPEG_EXE", ""),
+            ffprobe=os.environ.get("EASY_ASR_FFPROBE_EXE", ""),
+            ffmpeg_dir=os.environ.get("EASY_ASR_FFMPEG_DIR", ""),
+        )
+        flush_logging()
 
         uvicorn.run(
             app,

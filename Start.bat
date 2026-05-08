@@ -3,6 +3,9 @@ cd /d "%~dp0"
 
 echo Starting EASY-ASR...
 echo.
+echo Detailed logs will be written to package_logs\runtime_*.log
+echo Fatal crash traces will be written to package_logs\fatal_*.log
+echo.
 
 Easy-ASR.exe
 

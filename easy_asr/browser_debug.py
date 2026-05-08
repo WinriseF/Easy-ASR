@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from easy_asr.audio import ffmpeg_exe, ffprobe_exe, probe_duration, require_ffmpeg
+from easy_asr.debug_runtime import flush_logging, get_logger, log_debug, log_warning, shorten
 from easy_asr.engines.base import EngineOptions
 from easy_asr.jobs import JobManager, safe_path_stem, short_timestamp
 
@@ -44,6 +45,7 @@ YTDLP_HOST_RE = re.compile(
     r")$",
     re.IGNORECASE,
 )
+LOGGER = get_logger(__name__)
 
 
 MEDIA_PROBE_SCRIPT = r"""
@@ -154,8 +156,10 @@ class DebugBrowserManager:
     ) -> dict:
         endpoint = _normalize_endpoint(endpoint)
         _ensure_local_endpoint(endpoint)
+        log_debug(LOGGER, "browser_launch_requested", endpoint=endpoint, start_url=start_url)
         try:
             version = _debug_json(endpoint, "/json/version")
+            log_debug(LOGGER, "browser_launch_reused_existing", endpoint=endpoint, browser=version.get("Browser", ""))
             return {
                 "available": True,
                 "already_running": True,
@@ -191,6 +195,8 @@ class DebugBrowserManager:
             stdin=subprocess.DEVNULL,
             creationflags=creationflags,
         )
+        log_debug(LOGGER, "browser_launch_spawned", endpoint=endpoint, executable=executable, profile_dir=profile_dir, cmd=cmd)
+        flush_logging()
         deadline = time.monotonic() + 10
         last_error = ""
         while time.monotonic() < deadline:
@@ -236,6 +242,16 @@ class DebugBrowserManager:
         reload_page: bool = False,
     ) -> dict:
         tab = self._find_tab(endpoint, tab_id)
+        log_debug(
+            LOGGER,
+            "browser_probe_started",
+            endpoint=endpoint,
+            tab_id=tab.get("id", ""),
+            tab_title=tab.get("title", ""),
+            tab_url=tab.get("url", ""),
+            listen_seconds=listen_seconds,
+            reload_page=reload_page,
+        )
         with CdpSession(tab["webSocketDebuggerUrl"]) as session:
             session.call("Runtime.enable")
             session.call("Network.enable")
@@ -252,6 +268,15 @@ class DebugBrowserManager:
         recommended = next((item for item in candidates if item["supported"]), None)
         if recommended is not None:
             recommended["recommended"] = True
+        log_debug(
+            LOGGER,
+            "browser_probe_completed",
+            endpoint=endpoint,
+            tab_id=tab.get("id", ""),
+            candidate_count=len(candidates),
+            recommended=self._candidate_log_payload(recommended) if recommended else None,
+            candidates=[self._candidate_log_payload(item) for item in candidates[:8]],
+        )
         return {
             "tab": {key: tab.get(key, "") for key in ("id", "title", "url")},
             "page": after or before,
@@ -304,6 +329,13 @@ class DebugBrowserManager:
             candidate["supported"] = False
             candidate["validation_status"] = "failed"
             candidate["reason"] = _short_error(exc)
+        log_debug(
+            LOGGER,
+            "browser_candidate_validated",
+            endpoint=endpoint,
+            tab_id=tab.get("id", ""),
+            candidate=self._candidate_log_payload(candidate),
+        )
         return candidate
 
     def list_imports(self) -> list[dict]:
@@ -347,6 +379,17 @@ class DebugBrowserManager:
             self._imports[import_id] = record
             self._options[import_id] = options
             self._formats[import_id] = formats or {"txt"}
+        log_debug(
+            LOGGER,
+            "browser_transcribe_record_created",
+            import_id=import_id,
+            endpoint=endpoint,
+            tab_id=tab.get("id", ""),
+            source_url=shorten(source_url, 500),
+            media_path=record.media_path,
+            options=options.__dict__,
+            formats=sorted(self._formats[import_id]),
+        )
         self._executor.submit(self._extract_and_submit, import_id)
         return record
 
@@ -381,6 +424,16 @@ class DebugBrowserManager:
         )
         with self._lock:
             self._imports[import_id] = record
+        log_debug(
+            LOGGER,
+            "browser_download_record_created",
+            import_id=import_id,
+            endpoint=endpoint,
+            tab_id=tab.get("id", ""),
+            source_url=shorten(source_url, 500),
+            mode=record.mode,
+            media_path=record.media_path,
+        )
         self._executor.submit(self._extract_and_submit, import_id)
         return record
 
@@ -401,12 +454,34 @@ class DebugBrowserManager:
             return
         try:
             tab = self._find_tab(record.endpoint, record.tab_id)
+            log_debug(
+                LOGGER,
+                "browser_extract_started",
+                import_id=import_id,
+                mode=record.mode,
+                endpoint=record.endpoint,
+                tab_id=record.tab_id,
+                tab_title=tab.get("title", ""),
+                source_url=shorten(record.source_url, 500),
+                is_ytdlp_page=_is_ytdlp_page_url(record.source_url),
+                output_path=record.media_path,
+            )
+            flush_logging()
             if record.mode in {"download_audio", "download_video"}:
                 kind = "video" if record.mode == "download_video" else "audio"
                 if _is_ytdlp_page_url(record.source_url):
+                    log_debug(LOGGER, "browser_extract_branch", import_id=import_id, branch="download_with_ytdlp", kind=kind)
                     self._download_with_ytdlp(record, kind)
                 else:
                     headers = self._headers_for_media(record.endpoint, tab, record.source_url)
+                    log_debug(
+                        LOGGER,
+                        "browser_extract_branch",
+                        import_id=import_id,
+                        branch="download_direct_media",
+                        kind=kind,
+                        headers=_sanitize_headers(headers),
+                    )
                     self._download_direct_media(record, headers, kind)
                 with self._lock:
                     record.status = "downloaded"
@@ -422,9 +497,17 @@ class DebugBrowserManager:
                 return
 
             if _is_ytdlp_page_url(record.source_url):
+                log_debug(LOGGER, "browser_extract_branch", import_id=import_id, branch="extract_audio_with_ytdlp")
                 self._extract_audio_with_ytdlp(record)
             else:
                 headers = self._headers_for_media(record.endpoint, tab, record.source_url)
+                log_debug(
+                    LOGGER,
+                    "browser_extract_branch",
+                    import_id=import_id,
+                    branch="extract_audio_direct",
+                    headers=_sanitize_headers(headers),
+                )
                 self._extract_audio(record, headers)
             duration_label = _duration_label(record.duration_seconds)
             options = self._options.get(import_id) or EngineOptions()
@@ -443,6 +526,8 @@ class DebugBrowserManager:
                     )
                 )
         except Exception as exc:
+            LOGGER.exception("browser_extract_failed | import_id=%s", import_id)
+            flush_logging()
             with self._lock:
                 record.status = "failed"
                 record.error = str(exc)
@@ -456,12 +541,16 @@ class DebugBrowserManager:
         require_ffmpeg()
         record.media_path.parent.mkdir(parents=True, exist_ok=True)
         output_template = str(record.media_path.with_suffix(".%(ext)s"))
+        ytdlp_logger = _YtdlpDebugLogger(record.id)
         options = {
             "format": "bestvideo*+bestaudio/best" if kind == "video" else "bestaudio/best",
             "outtmpl": output_template,
             "noplaylist": True,
             "quiet": True,
-            "no_warnings": True,
+            "no_warnings": False,
+            "verbose": True,
+            "logger": ytdlp_logger,
+            "progress_hooks": [_make_ytdlp_progress_hook(record.id)],
         }
         ffmpeg_dir = os.environ.get("EASY_ASR_FFMPEG_DIR", "")
         if ffmpeg_dir:
@@ -476,10 +565,30 @@ class DebugBrowserManager:
                     "preferredquality": "0",
                 }
             ]
+        log_debug(
+            LOGGER,
+            "ytdlp_download_start",
+            import_id=record.id,
+            kind=kind,
+            source_url=shorten(record.source_url, 500),
+            media_path=record.media_path,
+            output_template=output_template,
+            ytdlp_runtime=_yt_dlp_runtime_summary(ytdlp),
+            options=_summarize_ytdlp_options(options),
+        )
+        flush_logging()
         with ytdlp.YoutubeDL(options) as downloader:
             downloader.download([record.source_url])
         if not record.media_path.exists() or record.media_path.stat().st_size == 0:
             raise RuntimeError("yt-dlp 没有生成可用的媒体文件。")
+        log_debug(
+            LOGGER,
+            "ytdlp_download_finished",
+            import_id=record.id,
+            kind=kind,
+            media_path=record.media_path,
+            size=record.media_path.stat().st_size,
+        )
         self._set_download_duration(record)
 
     def _download_direct_media(self, record: BrowserImportRecord, headers: dict[str, str], kind: str) -> None:
@@ -495,9 +604,27 @@ class DebugBrowserManager:
         else:
             cmd.extend(["-vn", "-ac", "2", "-c:a", "aac", "-b:a", "192k"])
         cmd.append(str(record.media_path))
+        log_debug(
+            LOGGER,
+            "direct_media_download_start",
+            import_id=record.id,
+            kind=kind,
+            source_url=shorten(record.source_url, 500),
+            headers=_sanitize_headers(headers),
+            cmd=cmd,
+        )
+        flush_logging()
         _run_ffmpeg(cmd)
         if not record.media_path.exists() or record.media_path.stat().st_size == 0:
             raise RuntimeError("ffmpeg 没有生成可用的媒体文件。")
+        log_debug(
+            LOGGER,
+            "direct_media_download_finished",
+            import_id=record.id,
+            kind=kind,
+            media_path=record.media_path,
+            size=record.media_path.stat().st_size,
+        )
         self._set_download_duration(record)
 
     def _set_download_duration(self, record: BrowserImportRecord) -> None:
@@ -511,12 +638,16 @@ class DebugBrowserManager:
         require_ffmpeg()
         record.media_path.parent.mkdir(parents=True, exist_ok=True)
         output_template = str(record.media_path.with_suffix(".%(ext)s"))
+        ytdlp_logger = _YtdlpDebugLogger(record.id)
         options = {
             "format": "bestaudio/best",
             "outtmpl": output_template,
             "noplaylist": True,
             "quiet": True,
-            "no_warnings": True,
+            "no_warnings": False,
+            "verbose": True,
+            "logger": ytdlp_logger,
+            "progress_hooks": [_make_ytdlp_progress_hook(record.id)],
             "ffmpeg_location": os.environ.get("EASY_ASR_FFMPEG_DIR", ""),
             "postprocessors": [
                 {
@@ -526,10 +657,28 @@ class DebugBrowserManager:
                 }
             ],
         }
+        log_debug(
+            LOGGER,
+            "ytdlp_extract_start",
+            import_id=record.id,
+            source_url=shorten(record.source_url, 500),
+            media_path=record.media_path,
+            output_template=output_template,
+            ytdlp_runtime=_yt_dlp_runtime_summary(ytdlp),
+            options=_summarize_ytdlp_options(options),
+        )
+        flush_logging()
         with ytdlp.YoutubeDL(options) as downloader:
             downloader.download([record.source_url])
         if not record.media_path.exists() or record.media_path.stat().st_size == 0:
             raise RuntimeError("yt-dlp 没有生成可用的音频文件。")
+        log_debug(
+            LOGGER,
+            "ytdlp_extract_finished",
+            import_id=record.id,
+            media_path=record.media_path,
+            size=record.media_path.stat().st_size,
+        )
         duration_seconds = probe_duration(record.media_path)
         duration_label = _duration_label(duration_seconds)
         with self._lock:
@@ -576,7 +725,16 @@ class DebugBrowserManager:
                     headers["Cookie"] = cookie_header
         except Exception:
             pass
-        return {key: value for key, value in headers.items() if value}
+        filtered = {key: value for key, value in headers.items() if value}
+        log_debug(
+            LOGGER,
+            "browser_media_headers_built",
+            endpoint=endpoint,
+            tab_id=tab.get("id", ""),
+            source_url=shorten(source_url, 400),
+            headers=_sanitize_headers(filtered),
+        )
+        return filtered
 
     def _extract_audio(self, record: BrowserImportRecord, headers: dict[str, str]) -> None:
         require_ffmpeg()
@@ -605,6 +763,15 @@ class DebugBrowserManager:
                 str(record.media_path),
             ]
         )
+        log_debug(
+            LOGGER,
+            "direct_audio_extract_start",
+            import_id=record.id,
+            source_url=shorten(record.source_url, 500),
+            headers=_sanitize_headers(headers),
+            cmd=cmd,
+        )
+        flush_logging()
         completed = subprocess.run(
             cmd,
             check=False,
@@ -613,6 +780,15 @@ class DebugBrowserManager:
             encoding="utf-8",
             errors="replace",
         )
+        log_debug(
+            LOGGER,
+            "direct_audio_extract_completed",
+            import_id=record.id,
+            returncode=completed.returncode,
+            stdout=shorten(completed.stdout.strip(), 800),
+            stderr=shorten(completed.stderr.strip(), 800),
+        )
+        flush_logging()
         if completed.returncode != 0:
             message = completed.stderr.strip() or completed.stdout.strip() or "ffmpeg 提取失败"
             raise RuntimeError(message)
@@ -631,6 +807,21 @@ class DebugBrowserManager:
                     progress=0.7,
                 )
             )
+
+    def _candidate_log_payload(self, candidate: dict | None) -> dict | None:
+        if not candidate:
+            return None
+        return {
+            "url": shorten(candidate.get("url", ""), 260),
+            "source": candidate.get("source", ""),
+            "title": shorten(candidate.get("title", ""), 160),
+            "supported": candidate.get("supported"),
+            "recommended": candidate.get("recommended"),
+            "validation_status": candidate.get("validation_status", ""),
+            "duration_seconds": candidate.get("duration_seconds"),
+            "reason": shorten(candidate.get("reason", ""), 260),
+            "score": candidate.get("score"),
+        }
 
 
 class CdpSession:
@@ -921,6 +1112,8 @@ def _load_ytdlp():
 
 
 def _run_ffmpeg(cmd: list[str]) -> None:
+    log_debug(LOGGER, "ffmpeg_subprocess_start", cmd=cmd)
+    flush_logging()
     completed = subprocess.run(
         cmd,
         check=False,
@@ -929,6 +1122,15 @@ def _run_ffmpeg(cmd: list[str]) -> None:
         encoding="utf-8",
         errors="replace",
     )
+    log_debug(
+        LOGGER,
+        "ffmpeg_subprocess_completed",
+        cmd=cmd,
+        returncode=completed.returncode,
+        stdout=shorten(completed.stdout.strip(), 800),
+        stderr=shorten(completed.stderr.strip(), 800),
+    )
+    flush_logging()
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "ffmpeg 处理失败"
         raise RuntimeError(message)
@@ -1014,6 +1216,14 @@ def _probe_remote_duration(source_url: str, headers: dict[str, str]) -> float:
         ]
     )
     try:
+        log_debug(
+            LOGGER,
+            "ffprobe_remote_duration_start",
+            source_url=shorten(source_url, 500),
+            headers=_sanitize_headers(headers),
+            cmd=cmd,
+        )
+        flush_logging()
         completed = subprocess.run(
             cmd,
             check=False,
@@ -1024,7 +1234,18 @@ def _probe_remote_duration(source_url: str, headers: dict[str, str]) -> float:
             timeout=20,
         )
     except subprocess.TimeoutExpired as exc:
+        LOGGER.exception("ffprobe_remote_duration_timeout")
+        flush_logging()
         raise RuntimeError("ffprobe 验证超时") from exc
+    log_debug(
+        LOGGER,
+        "ffprobe_remote_duration_completed",
+        source_url=shorten(source_url, 500),
+        returncode=completed.returncode,
+        stdout=shorten(completed.stdout.strip(), 800),
+        stderr=shorten(completed.stderr.strip(), 800),
+    )
+    flush_logging()
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "ffprobe 无法读取媒体源"
         raise RuntimeError(message)
@@ -1041,6 +1262,89 @@ def _probe_remote_duration(source_url: str, headers: dict[str, str]) -> float:
 def _short_error(error: Exception) -> str:
     text = str(error).strip().replace("\r", " ").replace("\n", " ")
     return text[:180] or error.__class__.__name__
+
+
+def _sanitize_headers(headers: dict[str, str]) -> dict[str, str]:
+    sanitized: dict[str, str] = {}
+    for key, value in headers.items():
+        if key.lower() == "cookie":
+            sanitized[key] = f"<cookie len={len(value)}>"
+        else:
+            sanitized[key] = shorten(value, 220)
+    return sanitized
+
+
+def _module_summary(module: Any) -> dict[str, str]:
+    if module is None:
+        return {"present": "false"}
+    return {
+        "present": "true",
+        "file": shorten(getattr(module, "__file__", ""), 260),
+        "version": str(getattr(module, "__version__", "")),
+    }
+
+
+def _yt_dlp_runtime_summary(ytdlp: Any) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "module_file": shorten(getattr(ytdlp, "__file__", ""), 260),
+        "module_version": str(getattr(ytdlp, "__version__", "")),
+    }
+    try:
+        from yt_dlp import dependencies as deps
+
+        summary["dependencies"] = {
+            name: _module_summary(getattr(deps, name, None))
+            for name in ["certifi", "curl_cffi", "requests", "urllib3", "websockets", "brotli", "Cryptodome"]
+        }
+    except Exception as exc:
+        summary["dependencies_error"] = str(exc)
+    return summary
+
+
+def _summarize_ytdlp_options(options: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key, value in options.items():
+        if key in {"logger", "progress_hooks"}:
+            summary[key] = f"<{key}>"
+            continue
+        summary[key] = shorten(value, 260)
+    return summary
+
+
+def _make_ytdlp_progress_hook(import_id: str):
+    def hook(payload: dict[str, Any]) -> None:
+        log_debug(
+            LOGGER,
+            "ytdlp_progress",
+            import_id=import_id,
+            status=payload.get("status", ""),
+            downloaded_bytes=payload.get("downloaded_bytes"),
+            total_bytes=payload.get("total_bytes"),
+            total_bytes_estimate=payload.get("total_bytes_estimate"),
+            eta=payload.get("eta"),
+            speed=payload.get("speed"),
+            filename=shorten(payload.get("filename", ""), 260),
+        )
+        flush_logging()
+
+    return hook
+
+
+class _YtdlpDebugLogger:
+    def __init__(self, import_id: str):
+        self.import_id = import_id
+
+    def debug(self, message: str) -> None:
+        log_debug(LOGGER, "ytdlp_debug", import_id=self.import_id, message=shorten(message, 1200))
+        flush_logging()
+
+    def warning(self, message: str) -> None:
+        log_warning(LOGGER, "ytdlp_warning", import_id=self.import_id, message=shorten(message, 1200))
+        flush_logging()
+
+    def error(self, message: str) -> None:
+        log_warning(LOGGER, "ytdlp_error", import_id=self.import_id, message=shorten(message, 1200))
+        flush_logging()
 
 
 def _validate_media_url(source_url: str) -> None:
