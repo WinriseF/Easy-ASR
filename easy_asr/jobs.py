@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from easy_asr.debug_runtime import flush_logging, get_logger, log_debug, log_warning
 from easy_asr.audio import probe_duration
 from easy_asr.engines import EngineRegistry
 from easy_asr.engines.base import EngineOptions
@@ -22,6 +23,7 @@ AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".mp4", ".mkv"}
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 JOB_METADATA_FILE = "_job.json"
 OUTPUT_EXTS = {"txt", "srt", "vtt", "tsv", "csv", "json"}
+LOGGER = get_logger(__name__)
 
 
 @dataclass
@@ -194,8 +196,21 @@ class JobManager:
             return
         try:
             self._set_status(job, "running", 0.01, "开始处理任务")
+            log_debug(
+                LOGGER,
+                "job_run_start",
+                job_id=job.id,
+                input_path=job.input_path,
+                engine_id=job.options.engine_id,
+                model_name=job.options.model_name,
+                work_dir=job.options.work_dir,
+                formats=sorted(job.formats),
+            )
+            flush_logging()
             terminology = self.terminology_store.load() if job.options.apply_terminology else TerminologyLibrary()
             engine = self.registry.create(job.options.engine_id)
+            log_debug(LOGGER, "job_engine_created", job_id=job.id, engine_id=job.options.engine_id, engine_type=type(engine).__name__)
+            flush_logging()
             result = engine.transcribe(job.input_path, job.options, terminology, lambda p, m: self._progress(job, p, m))
             outputs = write_outputs(job.output_dir, job.source_name, result, job.formats)
             with self._lock:
@@ -203,10 +218,21 @@ class JobManager:
                 job.segments = [segment.to_dict() for segment in result.segments]
                 job.duration_seconds = result.duration_seconds
                 self._save_job(job)
+            log_debug(
+                LOGGER,
+                "job_transcribe_completed",
+                job_id=job.id,
+                segment_count=len(result.segments),
+                duration_seconds=result.duration_seconds,
+                outputs={key: str(path) for key, path in outputs.items()},
+            )
+            flush_logging()
             self._progress(job, 0.98, "正在清理临时切片")
             self._cleanup_work_dir(job)
             self._set_status(job, "completed", 1.0, "转写完成")
         except Exception as exc:
+            log_warning(LOGGER, "job_run_failed", job_id=job.id, error=repr(exc))
+            flush_logging()
             with self._lock:
                 job.error = str(exc)
                 self._save_job(job)

@@ -126,6 +126,13 @@ def runtime_snapshot() -> dict[str, Any]:
             "EASY_ASR_FFMPEG_EXE",
             "EASY_ASR_FFPROBE_EXE",
             "EASY_ASR_FFMPEG_DIR",
+            "FFMPEG_BINARY",
+            "FFPROBE_BINARY",
+            "MODELSCOPE_CACHE",
+            "HF_HOME",
+            "TORCH_HOME",
+            "MODELSCOPE_OFFLINE",
+            "HF_HUB_OFFLINE",
         ]
         if os.environ.get(key)
     }

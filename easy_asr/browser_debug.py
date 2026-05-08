@@ -5,6 +5,7 @@ import os
 import re
 import math
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -537,34 +538,12 @@ class DebugBrowserManager:
             )
 
     def _download_with_ytdlp(self, record: BrowserImportRecord, kind: str) -> None:
-        ytdlp = _load_ytdlp()
         require_ffmpeg()
         record.media_path.parent.mkdir(parents=True, exist_ok=True)
         output_template = str(record.media_path.with_suffix(".%(ext)s"))
-        ytdlp_logger = _YtdlpDebugLogger(record.id)
-        options = {
-            "format": "bestvideo*+bestaudio/best" if kind == "video" else "bestaudio/best",
-            "outtmpl": output_template,
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": False,
-            "verbose": True,
-            "logger": ytdlp_logger,
-            "progress_hooks": [_make_ytdlp_progress_hook(record.id)],
-        }
+        tab = self._find_tab(record.endpoint, record.tab_id)
+        headers = self._headers_for_media(record.endpoint, tab, record.source_url)
         ffmpeg_dir = os.environ.get("EASY_ASR_FFMPEG_DIR", "")
-        if ffmpeg_dir:
-            options["ffmpeg_location"] = ffmpeg_dir
-        if kind == "video":
-            options["merge_output_format"] = "mp4"
-        else:
-            options["postprocessors"] = [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "m4a",
-                    "preferredquality": "0",
-                }
-            ]
         log_debug(
             LOGGER,
             "ytdlp_download_start",
@@ -573,12 +552,12 @@ class DebugBrowserManager:
             source_url=shorten(record.source_url, 500),
             media_path=record.media_path,
             output_template=output_template,
-            ytdlp_runtime=_yt_dlp_runtime_summary(ytdlp),
-            options=_summarize_ytdlp_options(options),
+            ffmpeg_dir=ffmpeg_dir,
+            headers=_sanitize_headers(headers),
+            execution="subprocess",
         )
         flush_logging()
-        with ytdlp.YoutubeDL(options) as downloader:
-            downloader.download([record.source_url])
+        self._run_ytdlp_worker(record, mode="download", kind=kind, output_template=output_template, headers=headers)
         if not record.media_path.exists() or record.media_path.stat().st_size == 0:
             raise RuntimeError("yt-dlp 没有生成可用的媒体文件。")
         log_debug(
@@ -634,29 +613,11 @@ class DebugBrowserManager:
             record.updated_at = iso_now()
 
     def _extract_audio_with_ytdlp(self, record: BrowserImportRecord) -> None:
-        ytdlp = _load_ytdlp()
         require_ffmpeg()
         record.media_path.parent.mkdir(parents=True, exist_ok=True)
         output_template = str(record.media_path.with_suffix(".%(ext)s"))
-        ytdlp_logger = _YtdlpDebugLogger(record.id)
-        options = {
-            "format": "bestaudio/best",
-            "outtmpl": output_template,
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": False,
-            "verbose": True,
-            "logger": ytdlp_logger,
-            "progress_hooks": [_make_ytdlp_progress_hook(record.id)],
-            "ffmpeg_location": os.environ.get("EASY_ASR_FFMPEG_DIR", ""),
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "wav",
-                    "preferredquality": "0",
-                }
-            ],
-        }
+        tab = self._find_tab(record.endpoint, record.tab_id)
+        headers = self._headers_for_media(record.endpoint, tab, record.source_url)
         log_debug(
             LOGGER,
             "ytdlp_extract_start",
@@ -664,12 +625,12 @@ class DebugBrowserManager:
             source_url=shorten(record.source_url, 500),
             media_path=record.media_path,
             output_template=output_template,
-            ytdlp_runtime=_yt_dlp_runtime_summary(ytdlp),
-            options=_summarize_ytdlp_options(options),
+            ffmpeg_dir=os.environ.get("EASY_ASR_FFMPEG_DIR", ""),
+            headers=_sanitize_headers(headers),
+            execution="subprocess",
         )
         flush_logging()
-        with ytdlp.YoutubeDL(options) as downloader:
-            downloader.download([record.source_url])
+        self._run_ytdlp_worker(record, mode="extract_audio", kind="audio", output_template=output_template, headers=headers)
         if not record.media_path.exists() or record.media_path.stat().st_size == 0:
             raise RuntimeError("yt-dlp 没有生成可用的音频文件。")
         log_debug(
@@ -692,6 +653,67 @@ class DebugBrowserManager:
                     progress=0.7,
                 )
             )
+
+    def _run_ytdlp_worker(
+        self,
+        record: BrowserImportRecord,
+        mode: str,
+        kind: str,
+        output_template: str,
+        headers: dict[str, str],
+    ) -> None:
+        config_path = record.media_path.with_suffix(f".{record.id}.ytdlp.json")
+        config = {
+            "import_id": record.id,
+            "mode": mode,
+            "kind": kind,
+            "source_url": record.source_url,
+            "media_path": str(record.media_path),
+            "output_template": output_template,
+            "ffmpeg_dir": os.environ.get("EASY_ASR_FFMPEG_DIR", ""),
+            "headers": headers,
+        }
+        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        cmd = _ytdlp_worker_command(config_path)
+        log_debug(
+            LOGGER,
+            "ytdlp_worker_subprocess_start",
+            import_id=record.id,
+            mode=mode,
+            kind=kind,
+            cmd=cmd,
+            config_path=config_path,
+            config_size=config_path.stat().st_size,
+        )
+        flush_logging()
+        try:
+            completed = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        finally:
+            try:
+                config_path.unlink(missing_ok=True)
+            except Exception as exc:
+                log_warning(LOGGER, "ytdlp_worker_config_cleanup_failed", import_id=record.id, error=str(exc))
+        log_debug(
+            LOGGER,
+            "ytdlp_worker_subprocess_completed",
+            import_id=record.id,
+            returncode=completed.returncode,
+            stdout=shorten(completed.stdout.strip(), 2000),
+            stderr=shorten(completed.stderr.strip(), 4000),
+            media_exists=record.media_path.exists(),
+            media_size=record.media_path.stat().st_size if record.media_path.exists() else 0,
+        )
+        flush_logging()
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip() or f"yt-dlp worker exited with {completed.returncode}"
+            raise RuntimeError(f"yt-dlp 子进程失败，退出码 {completed.returncode}: {shorten(detail, 1200)}")
 
     def _headers_for_media(self, endpoint: str, tab: dict, source_url: str) -> dict[str, str]:
         headers: dict[str, str] = {
@@ -1109,6 +1131,13 @@ def _load_ytdlp():
     except ImportError as exc:
         raise RuntimeError("平台页面提取需要安装 requirements-browser-debug.txt 中的 yt-dlp。") from exc
     return ytdlp
+
+
+def _ytdlp_worker_command(config_path: Path) -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--easy-asr-ytdlp", str(config_path)]
+    run_app = Path(__file__).resolve().parent.parent / "run_app.py"
+    return [sys.executable, str(run_app), "--easy-asr-ytdlp", str(config_path)]
 
 
 def _run_ffmpeg(cmd: list[str]) -> None:

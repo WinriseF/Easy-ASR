@@ -27,6 +27,7 @@ datas = []
 binaries = []
 hiddenimports = [
     "easy_asr.main",
+    "easy_asr.ytdlp_worker",
     "easy_asr.engines.registry",
     "easy_asr.engines.funasr_engine",
     "easy_asr.engines.faster_whisper_engine",
@@ -52,6 +53,19 @@ if default_terms.exists():
     datas += [
         (str(default_terms), "data/terminology"),
     ]
+
+
+# FunASR 模型：打包环境必须离线加载，避免在目标机器触发 ModelScope HTTPS 下载
+modelscope_iic_dir = project_dir / "models" / "modelscope" / "models" / "iic"
+for model_dir_name in [
+    "SenseVoiceSmall",
+    "speech_fsmn_vad_zh-cn-16k-common-pytorch",
+]:
+    model_dir = modelscope_iic_dir / model_dir_name
+    if model_dir.exists():
+        datas += [
+            (str(model_dir), f"models/modelscope/models/iic/{model_dir_name}"),
+        ]
 
 
 # ffmpeg / ffprobe：作为普通数据文件带进去，不让 PyInstaller 当二进制依赖扫描

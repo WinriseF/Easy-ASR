@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
+import sys
 from pathlib import Path
 from threading import Lock
 
 from easy_asr.audio import probe_duration, split_audio_to_chunks
+from easy_asr.debug_runtime import flush_logging, get_logger, log_debug, log_warning
 from easy_asr.engines.base import EngineDescriptor, EngineOptions, Segment, TranscriptionResult
 from easy_asr.segmentation import split_text_segment
 from easy_asr.terminology import TerminologyLibrary
@@ -14,6 +17,17 @@ from easy_asr.terminology import TerminologyLibrary
 _MODEL_CACHE: dict[str, object] = {}
 _MODEL_LOCK = Lock()
 _TIMESTAMP_UNSUPPORTED_MODELS: set[int] = set()
+LOGGER = get_logger(__name__)
+
+_MODELSCOPE_MODEL_ALIASES = {
+    "iic/SenseVoiceSmall": ("iic", "SenseVoiceSmall"),
+    "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch": ("iic", "speech_fsmn_vad_zh-cn-16k-common-pytorch"),
+    "fsmn-vad": ("iic", "speech_fsmn_vad_zh-cn-16k-common-pytorch"),
+    "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch": (
+        "iic",
+        "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+    ),
+}
 
 
 class FunASRSenseVoiceEngine:
@@ -24,6 +38,22 @@ class FunASRSenseVoiceEngine:
         os.environ.setdefault("MODELSCOPE_CACHE", str(base_dir / "models" / "modelscope"))
         os.environ.setdefault("HF_HOME", str(base_dir / "models" / "hf"))
         os.environ.setdefault("TORCH_HOME", str(base_dir / "models" / "torch"))
+        self.bundle_dir = _bundle_base_dir(base_dir)
+        self.model_roots = _model_roots(base_dir, self.bundle_dir)
+        log_debug(
+            LOGGER,
+            "funasr_engine_initialized",
+            base_dir=base_dir,
+            bundle_dir=self.bundle_dir,
+            modelscope_cache=os.environ.get("MODELSCOPE_CACHE", ""),
+            hf_home=os.environ.get("HF_HOME", ""),
+            torch_home=os.environ.get("TORCH_HOME", ""),
+            ffmpeg_path=shutil.which("ffmpeg") or "",
+            ffprobe_path=shutil.which("ffprobe") or "",
+            model_roots=self.model_roots,
+            frozen=bool(getattr(sys, "frozen", False)),
+        )
+        flush_logging()
 
     @staticmethod
     def descriptor() -> EngineDescriptor:
@@ -50,14 +80,31 @@ class FunASRSenseVoiceEngine:
         terminology: TerminologyLibrary,
         progress,
     ) -> TranscriptionResult:
+        log_debug(
+            LOGGER,
+            "funasr_transcribe_start",
+            input_path=input_path,
+            model_name=options.model_name or "iic/SenseVoiceSmall",
+            language=options.language,
+            chunk_seconds=options.chunk_seconds,
+            batch_size_s=options.batch_size_s,
+            transcript_mode=options.transcript_mode,
+            ffmpeg_path=shutil.which("ffmpeg") or "",
+            frozen=bool(getattr(sys, "frozen", False)),
+        )
+        flush_logging()
         from funasr import AutoModel
         from funasr.utils.postprocess_utils import rich_transcription_postprocess
+        log_debug(LOGGER, "funasr_import_completed", auto_model=str(AutoModel))
+        flush_logging()
 
         model_name = options.model_name or "iic/SenseVoiceSmall"
         model = self._load_model(AutoModel, model_name)
         work_dir = options.work_dir or (self.base_dir / "chunks" / "_jobs" / input_path.stem)
         progress(0.04, "正在切分音频")
         chunks = split_audio_to_chunks(input_path, work_dir / "chunks", options.chunk_seconds)
+        log_debug(LOGGER, "funasr_audio_chunks_ready", input_path=input_path, chunk_count=len(chunks), work_dir=work_dir)
+        flush_logging()
 
         segments: list[Segment] = []
         whole_texts: list[str] = []
@@ -77,9 +124,29 @@ class FunASRSenseVoiceEngine:
                 "merge_length_s": options.merge_length_s,
             }
             if transcript_mode == "sentence":
+                log_debug(
+                    LOGGER,
+                    "funasr_generate_start",
+                    chunk_index=index,
+                    total_chunks=total,
+                    chunk_path=chunk.path,
+                    timestamp_mode=True,
+                )
+                flush_logging()
                 result = _generate_with_optional_timestamps(model, **generate_kwargs)
             else:
+                log_debug(
+                    LOGGER,
+                    "funasr_generate_start",
+                    chunk_index=index,
+                    total_chunks=total,
+                    chunk_path=chunk.path,
+                    timestamp_mode=False,
+                )
+                flush_logging()
                 result = model.generate(**generate_kwargs)
+            log_debug(LOGGER, "funasr_generate_completed", chunk_index=index, total_chunks=total, chunk_path=chunk.path)
+            flush_logging()
             texts: list[str] = []
             raw_items: list[dict] = []
             for item in result:
@@ -160,30 +227,144 @@ class FunASRSenseVoiceEngine:
         )
 
     def preload(self, options: EngineOptions) -> None:
+        log_debug(
+            LOGGER,
+            "funasr_preload_start",
+            model_name=options.model_name or "iic/SenseVoiceSmall",
+            ffmpeg_path=shutil.which("ffmpeg") or "",
+            frozen=bool(getattr(sys, "frozen", False)),
+        )
+        flush_logging()
         from funasr import AutoModel
+        log_debug(LOGGER, "funasr_import_completed", auto_model=str(AutoModel), preload=True)
+        flush_logging()
 
         model_name = options.model_name or "iic/SenseVoiceSmall"
         self._load_model(AutoModel, model_name)
 
     def _load_model(self, auto_model, model_name: str):
-        cache_key = f"{self.id}:{model_name}:cpu"
+        model_ref, model_path = self._resolve_model_reference(model_name)
+        vad_ref, vad_path = self._resolve_model_reference("fsmn-vad")
+        cache_key = f"{self.id}:{model_ref}:{vad_ref}:cpu"
         with _MODEL_LOCK:
             if cache_key not in _MODEL_CACHE:
-                _MODEL_CACHE[cache_key] = auto_model(
-                    model=model_name,
-                    trust_remote_code=True,
-                    vad_model="fsmn-vad",
-                    vad_kwargs={"max_single_segment_time": 30000},
-                    device="cpu",
-                    disable_update=True,
+                if getattr(sys, "frozen", False):
+                    missing = []
+                    if _is_remote_model_name(model_name) and model_path is None:
+                        missing.append(model_name)
+                    if vad_path is None:
+                        missing.append("iic/speech_fsmn_vad_zh-cn-16k-common-pytorch")
+                    if missing:
+                        raise RuntimeError(
+                            "打包环境缺少本地 FunASR 模型，已阻止在线下载以避免 OpenSSL 原生崩溃。"
+                            f"缺少: {', '.join(sorted(set(missing)))}。"
+                            "请重新打包并确认 models/modelscope/models/iic 下包含对应模型目录。"
+                        )
+
+                log_debug(
+                    LOGGER,
+                    "funasr_model_load_start",
+                    requested_model=model_name,
+                    resolved_model=model_ref,
+                    resolved_model_path=model_path,
+                    resolved_vad_model=vad_ref,
+                    resolved_vad_path=vad_path,
+                    cache_key=cache_key,
+                    model_roots=self.model_roots,
+                    ffmpeg_path=shutil.which("ffmpeg") or "",
+                    frozen=bool(getattr(sys, "frozen", False)),
                 )
+                flush_logging()
+                try:
+                    _MODEL_CACHE[cache_key] = auto_model(
+                        model=model_ref,
+                        trust_remote_code=True,
+                        vad_model=vad_ref,
+                        vad_kwargs={"max_single_segment_time": 30000},
+                        device="cpu",
+                        disable_update=True,
+                    )
+                except Exception as exc:
+                    log_warning(
+                        LOGGER,
+                        "funasr_model_load_failed",
+                        requested_model=model_name,
+                        resolved_model=model_ref,
+                        resolved_vad_model=vad_ref,
+                        error=repr(exc),
+                    )
+                    flush_logging()
+                    raise
+                log_debug(
+                    LOGGER,
+                    "funasr_model_load_completed",
+                    requested_model=model_name,
+                    resolved_model=model_ref,
+                    resolved_vad_model=vad_ref,
+                    cache_key=cache_key,
+                )
+                flush_logging()
             return _MODEL_CACHE[cache_key]
+
+    def _resolve_model_reference(self, model_name: str) -> tuple[str, Path | None]:
+        raw = str(model_name or "").strip()
+        if not raw:
+            return raw, None
+
+        explicit_path = Path(raw)
+        if explicit_path.exists():
+            resolved = explicit_path.resolve()
+            return str(resolved), resolved
+
+        alias = _MODELSCOPE_MODEL_ALIASES.get(raw)
+        if alias is not None:
+            for root in self.model_roots:
+                candidate = root / alias[0] / alias[1]
+                if _looks_like_model_dir(candidate):
+                    resolved = candidate.resolve()
+                    return str(resolved), resolved
+
+        return raw, None
 
 
 def _funasr_language(language: str) -> str:
     if language in {"", "auto"}:
         return "auto"
     return language
+
+
+def _bundle_base_dir(base_dir: Path) -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", base_dir / "_internal")).resolve()
+    return base_dir.resolve()
+
+
+def _model_roots(base_dir: Path, bundle_dir: Path) -> list[Path]:
+    roots: list[Path] = []
+    for root in [
+        base_dir / "models" / "modelscope" / "models",
+        bundle_dir / "models" / "modelscope" / "models",
+    ]:
+        resolved = root.resolve()
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _looks_like_model_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    markers = ["configuration.json", "config.yaml", "model.pt", "am.mvn"]
+    return any((path / marker).exists() for marker in markers)
+
+
+def _is_remote_model_name(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if Path(text).exists():
+        return False
+    return "/" in text and not any(text.startswith(prefix) for prefix in (".", "/", "\\"))
 
 
 def _transcript_mode(value: str) -> str:

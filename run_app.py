@@ -85,9 +85,16 @@ def _configure_bundled_ffmpeg() -> None:
         ffprobe = bin_dir / "ffprobe.exe"
 
         if ffmpeg.exists() and ffprobe.exists():
+            existing_path = os.environ.get("PATH", "")
+            path_entries = [entry for entry in existing_path.split(os.pathsep) if entry]
+            bin_dir_text = str(bin_dir)
+            if not any(Path(entry).resolve() == bin_dir.resolve() for entry in path_entries if entry):
+                os.environ["PATH"] = bin_dir_text + (os.pathsep + existing_path if existing_path else "")
             os.environ["EASY_ASR_FFMPEG_EXE"] = str(ffmpeg)
             os.environ["EASY_ASR_FFPROBE_EXE"] = str(ffprobe)
             os.environ["EASY_ASR_FFMPEG_DIR"] = str(bin_dir)
+            os.environ.setdefault("FFMPEG_BINARY", str(ffmpeg))
+            os.environ.setdefault("FFPROBE_BINARY", str(ffprobe))
             log_debug(
                 LOGGER,
                 "bundled_ffmpeg_selected",
@@ -96,6 +103,8 @@ def _configure_bundled_ffmpeg() -> None:
                 selected_dir=bin_dir,
                 ffmpeg=ffmpeg,
                 ffprobe=ffprobe,
+                path_prepended=True,
+                path_head=os.environ.get("PATH", "").split(os.pathsep)[:5],
             )
             flush_logging()
             return
@@ -196,6 +205,21 @@ def _pause_before_exit() -> None:
         pass
 
 
+def _maybe_run_ytdlp_worker() -> bool:
+    if len(sys.argv) < 2 or sys.argv[1] != "--easy-asr-ytdlp":
+        return False
+    if len(sys.argv) != 3:
+        raise RuntimeError("yt-dlp worker requires a config path.")
+
+    log_debug(LOGGER, "ytdlp_worker_mode_entered", config_path=sys.argv[2], **runtime_snapshot())
+    flush_logging()
+
+    from easy_asr.ytdlp_worker import run_from_config
+
+    exit_code = run_from_config(sys.argv[2])
+    raise SystemExit(exit_code)
+
+
 if __name__ == "__main__":
     _install_exception_hooks()
 
@@ -214,6 +238,9 @@ if __name__ == "__main__":
 
         _warm_up_python_ssl()
         _configure_bundled_ffmpeg()
+
+        _maybe_run_ytdlp_worker()
+
         _print_banner()
 
         from easy_asr.main import app
