@@ -29,3 +29,4 @@ vendor/ffmpeg/
 .codex-*.png
 build/
 dist/
+Easy-ASR.zip
