@@ -5,17 +5,15 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from threading import Lock
 
 from easy_asr.audio import probe_duration, split_audio_to_chunks
 from easy_asr.debug_runtime import flush_logging, get_logger, log_debug, log_warning
 from easy_asr.engines.base import EngineDescriptor, EngineOptions, Segment, TranscriptionResult
+from easy_asr.model_cache import MODEL_CACHE
 from easy_asr.segmentation import split_text_segment
 from easy_asr.terminology import TerminologyLibrary
 
 
-_MODEL_CACHE: dict[str, object] = {}
-_MODEL_LOCK = Lock()
 _TIMESTAMP_UNSUPPORTED_MODELS: set[int] = set()
 LOGGER = get_logger(__name__)
 
@@ -103,7 +101,25 @@ class FunASRSenseVoiceEngine:
         flush_logging()
 
         model_name = options.model_name or "iic/SenseVoiceSmall"
-        model = self._load_model(AutoModel, model_name)
+        with self._model_lease(AutoModel, model_name) as model:
+            return self._transcribe_with_model(
+                model,
+                input_path,
+                options,
+                terminology,
+                progress,
+                rich_transcription_postprocess,
+            )
+
+    def _transcribe_with_model(
+        self,
+        model,
+        input_path: Path,
+        options: EngineOptions,
+        terminology: TerminologyLibrary,
+        progress,
+        postprocess,
+    ) -> TranscriptionResult:
         work_dir = options.work_dir or (self.base_dir / "chunks" / "_jobs" / input_path.stem)
         progress(0.04, "正在切分音频")
         chunks = split_audio_to_chunks(input_path, work_dir / "chunks", options.chunk_seconds)
@@ -156,7 +172,7 @@ class FunASRSenseVoiceEngine:
             for item in result:
                 raw_items.append(item)
                 text = str(item.get("text", ""))
-                text = rich_transcription_postprocess(text).strip()
+                text = postprocess(text).strip()
                 if text:
                     texts.append(text)
             text = "\n".join(texts).strip()
@@ -192,7 +208,7 @@ class FunASRSenseVoiceEngine:
                 chunk_end=chunk_end,
                 raw_items=raw_items,
                 terminology=terminology if options.apply_terminology else None,
-                postprocess=rich_transcription_postprocess,
+                postprocess=postprocess,
             )
             if timestamp_segments:
                 segments.extend(timestamp_segments)
@@ -244,99 +260,100 @@ class FunASRSenseVoiceEngine:
         flush_logging()
 
         model_name = options.model_name or "iic/SenseVoiceSmall"
-        self._load_model(AutoModel, model_name)
+        with self._model_lease(AutoModel, model_name):
+            pass
 
-    def _load_model(self, auto_model, model_name: str):
+    def _model_lease(self, auto_model, model_name: str):
         model_ref, model_path = self._resolve_model_reference(model_name)
         vad_ref, vad_path = self._resolve_model_reference("fsmn-vad")
         cache_key = f"{self.id}:{model_ref}:{vad_ref}:cpu"
-        with _MODEL_LOCK:
-            if cache_key not in _MODEL_CACHE:
+
+        def load_model():
+            log_debug(
+                LOGGER,
+                "funasr_model_load_start",
+                requested_model=model_name,
+                resolved_model=model_ref,
+                resolved_model_path=model_path,
+                resolved_vad_model=vad_ref,
+                resolved_vad_path=vad_path,
+                cache_key=cache_key,
+                model_roots=self.model_roots,
+                ffmpeg_path=shutil.which("ffmpeg") or "",
+                frozen=bool(getattr(sys, "frozen", False)),
+            )
+            flush_logging()
+            errors: list[str] = []
+            for candidate in _funasr_load_candidates(model_name, model_ref, model_path, vad_ref, vad_path):
                 log_debug(
                     LOGGER,
-                    "funasr_model_load_start",
+                    "funasr_model_load_candidate_start",
                     requested_model=model_name,
-                    resolved_model=model_ref,
-                    resolved_model_path=model_path,
-                    resolved_vad_model=vad_ref,
-                    resolved_vad_path=vad_path,
-                    cache_key=cache_key,
-                    model_roots=self.model_roots,
-                    ffmpeg_path=shutil.which("ffmpeg") or "",
-                    frozen=bool(getattr(sys, "frozen", False)),
+                    candidate_source=candidate["source"],
+                    candidate_model=candidate["model"],
+                    candidate_vad_model=candidate["vad_model"],
+                    hf_endpoint=candidate.get("hf_endpoint") or "",
                 )
                 flush_logging()
-                errors: list[str] = []
-                for candidate in _funasr_load_candidates(model_name, model_ref, model_path, vad_ref, vad_path):
+                previous_hf_endpoint = os.environ.get("HF_ENDPOINT")
+                hf_endpoint = candidate.get("hf_endpoint")
+                if hf_endpoint:
+                    os.environ["HF_ENDPOINT"] = str(hf_endpoint)
+                try:
+                    model = auto_model(
+                        model=candidate["model"],
+                        trust_remote_code=True,
+                        vad_model=candidate["vad_model"],
+                        vad_kwargs={"max_single_segment_time": 30000},
+                        device="cpu",
+                        disable_update=True,
+                        **candidate["extra_kwargs"],
+                    )
                     log_debug(
                         LOGGER,
-                        "funasr_model_load_candidate_start",
+                        "funasr_model_load_completed",
+                        requested_model=model_name,
+                        resolved_model=model_ref,
+                        resolved_vad_model=vad_ref,
+                        cache_key=cache_key,
+                    )
+                    flush_logging()
+                    return model
+                except Exception as exc:
+                    errors.append(f"{candidate['source']}: {exc}")
+                    log_warning(
+                        LOGGER,
+                        "funasr_model_load_candidate_failed",
                         requested_model=model_name,
                         candidate_source=candidate["source"],
                         candidate_model=candidate["model"],
                         candidate_vad_model=candidate["vad_model"],
                         hf_endpoint=candidate.get("hf_endpoint") or "",
+                        error=repr(exc),
                     )
                     flush_logging()
-                    previous_hf_endpoint = os.environ.get("HF_ENDPOINT")
-                    hf_endpoint = candidate.get("hf_endpoint")
-                    if hf_endpoint:
-                        os.environ["HF_ENDPOINT"] = str(hf_endpoint)
-                    try:
-                        _MODEL_CACHE[cache_key] = auto_model(
-                            model=candidate["model"],
-                            trust_remote_code=True,
-                            vad_model=candidate["vad_model"],
-                            vad_kwargs={"max_single_segment_time": 30000},
-                            device="cpu",
-                            disable_update=True,
-                            **candidate["extra_kwargs"],
-                        )
-                        break
-                    except Exception as exc:
-                        errors.append(f"{candidate['source']}: {exc}")
-                        log_warning(
-                            LOGGER,
-                            "funasr_model_load_candidate_failed",
-                            requested_model=model_name,
-                            candidate_source=candidate["source"],
-                            candidate_model=candidate["model"],
-                            candidate_vad_model=candidate["vad_model"],
-                            hf_endpoint=candidate.get("hf_endpoint") or "",
-                            error=repr(exc),
-                        )
-                        flush_logging()
-                    finally:
-                        if previous_hf_endpoint is None:
-                            os.environ.pop("HF_ENDPOINT", None)
-                        else:
-                            os.environ["HF_ENDPOINT"] = previous_hf_endpoint
+                finally:
+                    if previous_hf_endpoint is None:
+                        os.environ.pop("HF_ENDPOINT", None)
+                    else:
+                        os.environ["HF_ENDPOINT"] = previous_hf_endpoint
 
-                if cache_key not in _MODEL_CACHE:
-                    error = RuntimeError(
-                        "FunASR 模型下载/加载失败，已尝试 ModelScope 与 HuggingFace 镜像候选: "
-                        + "; ".join(errors[-4:])
-                    )
-                    log_warning(
-                        LOGGER,
-                        "funasr_model_load_failed",
-                        requested_model=model_name,
-                        resolved_model=model_ref,
-                        resolved_vad_model=vad_ref,
-                        error=repr(error),
-                    )
-                    flush_logging()
-                    raise error
-                log_debug(
-                    LOGGER,
-                    "funasr_model_load_completed",
-                    requested_model=model_name,
-                    resolved_model=model_ref,
-                    resolved_vad_model=vad_ref,
-                    cache_key=cache_key,
-                )
-                flush_logging()
-            return _MODEL_CACHE[cache_key]
+            error = RuntimeError(
+                "FunASR 模型下载/加载失败，已尝试 ModelScope 与 HuggingFace 镜像候选: "
+                + "; ".join(errors[-4:])
+            )
+            log_warning(
+                LOGGER,
+                "funasr_model_load_failed",
+                requested_model=model_name,
+                resolved_model=model_ref,
+                resolved_vad_model=vad_ref,
+                error=repr(error),
+            )
+            flush_logging()
+            raise error
+
+        return MODEL_CACHE.lease(cache_key, load_model, on_evict=_log_model_evicted)
 
     def _resolve_model_reference(self, model_name: str) -> tuple[str, Path | None]:
         raw = str(model_name or "").strip()
@@ -357,6 +374,12 @@ class FunASRSenseVoiceEngine:
                     return str(resolved), resolved
 
         return raw, None
+
+
+def _log_model_evicted(cache_key: str, model: object) -> None:
+    _TIMESTAMP_UNSUPPORTED_MODELS.discard(id(model))
+    log_debug(LOGGER, "funasr_model_unloaded", cache_key=cache_key, model_type=type(model).__name__)
+    flush_logging()
 
 
 def _funasr_language(language: str) -> str:

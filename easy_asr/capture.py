@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import sys
 import threading
 import uuid
@@ -18,6 +19,8 @@ CAPTURE_EXT = ".wav"
 CAPTURE_TERMINAL_STATUSES = {"completed", "failed"}
 INSTALL_HINT = "请先安装 requirements-capture-windows.txt，然后重启本地服务。"
 LIVE_CHUNK_SECONDS = 20
+CAPTURE_QUEUE_MAX_BUFFERS = 500
+CAPTURE_QUEUE_WAIT_SECONDS = 0.2
 
 
 @dataclass
@@ -209,7 +212,9 @@ class PlaybackCaptureManager:
         if thread is not None:
             thread.join(timeout=10)
             if thread.is_alive():
-                raise TimeoutError("停止采集超时，请稍后刷新状态。")
+                error = TimeoutError("停止采集超时，已将会话标记为失败，请检查蓝牙或系统播放设备状态。")
+                self._mark_failed(record, error)
+                raise error
 
         record = self.get_session(session_id)
         if record is None:
@@ -240,12 +245,54 @@ class PlaybackCaptureManager:
                 chunk_frames = 0
                 chunk_file = None
                 chunk_path = None
+                audio_queue: queue.Queue[bytes] = queue.Queue(maxsize=CAPTURE_QUEUE_MAX_BUFFERS)
+                dropped_buffers = 0
 
                 self._mark_recording(record, device, sample_rate, channels)
                 with wave.open(str(record.wav_path), "wb") as wave_file:
                     wave_file.setnchannels(channels)
                     wave_file.setsampwidth(sample_width)
                     wave_file.setframerate(sample_rate)
+
+                    def handle_audio_buffer(data: bytes) -> None:
+                        nonlocal chunk_file, chunk_frames, chunk_index, chunk_path, chunk_start_frames
+                        if not data:
+                            return
+                        wave_file.writeframes(data)
+                        chunk_file.writeframes(data)
+                        frame_count = len(data) // max(1, channels * sample_width)
+                        chunk_frames += frame_count
+                        self._update_recording(record, frame_count, len(data), sample_rate, _pcm_level(data))
+                        if chunk_frames >= live_chunk_frames:
+                            chunk_file.close()
+                            self._submit_live_chunk(
+                                record,
+                                chunk_path,
+                                chunk_start_frames / sample_rate,
+                                chunk_frames / sample_rate,
+                            )
+                            chunk_index += 1
+                            chunk_start_frames += chunk_frames
+                            chunk_frames = 0
+                            chunk_file, chunk_path = _open_chunk_file(
+                                chunk_dir,
+                                chunk_index,
+                                channels,
+                                sample_width,
+                                sample_rate,
+                            )
+
+                    def audio_callback(in_data, frame_count, time_info, status_flags):
+                        nonlocal dropped_buffers
+                        if stop_event.is_set():
+                            return (None, pyaudio.paAbort)
+                        if in_data:
+                            try:
+                                audio_queue.put_nowait(in_data)
+                            except queue.Full:
+                                dropped_buffers += 1
+                        return (None, pyaudio.paContinue)
+
                     stream = audio.open(
                         format=data_format,
                         channels=channels,
@@ -253,6 +300,7 @@ class PlaybackCaptureManager:
                         input=True,
                         input_device_index=int(device["index"]),
                         frames_per_buffer=frames_per_buffer,
+                        stream_callback=audio_callback,
                     )
                     try:
                         chunk_file, chunk_path = _open_chunk_file(
@@ -262,41 +310,49 @@ class PlaybackCaptureManager:
                             sample_width,
                             sample_rate,
                         )
-                        while not stop_event.is_set():
-                            data = stream.read(frames_per_buffer, exception_on_overflow=False)
-                            if not data:
+                        if not stream.is_active() and hasattr(stream, "start_stream"):
+                            stream.start_stream()
+                        while True:
+                            if stop_event.is_set() and audio_queue.empty():
+                                break
+                            try:
+                                data = audio_queue.get(timeout=CAPTURE_QUEUE_WAIT_SECONDS)
+                            except queue.Empty:
+                                if not stream.is_active():
+                                    if stop_event.is_set():
+                                        break
+                                    raise RuntimeError("系统音频采集已中断，请检查播放设备是否断开或切换。")
                                 continue
-                            wave_file.writeframes(data)
-                            chunk_file.writeframes(data)
-                            frame_count = len(data) // max(1, channels * sample_width)
-                            chunk_frames += frame_count
-                            self._update_recording(record, frame_count, len(data), sample_rate, _pcm_level(data))
-                            if chunk_frames >= live_chunk_frames:
-                                chunk_file.close()
-                                self._submit_live_chunk(record, chunk_path, chunk_start_frames / sample_rate, chunk_frames / sample_rate)
-                                chunk_index += 1
-                                chunk_start_frames += chunk_frames
-                                chunk_frames = 0
-                                chunk_file, chunk_path = _open_chunk_file(
-                                    chunk_dir,
-                                    chunk_index,
-                                    channels,
-                                    sample_width,
-                                    sample_rate,
-                                )
+                            handle_audio_buffer(data)
                     finally:
-                        if chunk_file is not None:
-                            chunk_file.close()
-                            if chunk_frames > 0 and chunk_path is not None:
-                                self._submit_live_chunk(
-                                    record,
-                                    chunk_path,
-                                    chunk_start_frames / sample_rate,
-                                    chunk_frames / sample_rate,
-                                )
-                        if stream.is_active():
-                            stream.stop_stream()
-                        stream.close()
+                        try:
+                            stream.close()
+                        finally:
+                            while True:
+                                try:
+                                    handle_audio_buffer(audio_queue.get_nowait())
+                                except queue.Empty:
+                                    break
+                            if chunk_file is not None:
+                                chunk_file.close()
+                                if chunk_frames > 0 and chunk_path is not None:
+                                    self._submit_live_chunk(
+                                        record,
+                                        chunk_path,
+                                        chunk_start_frames / sample_rate,
+                                        chunk_frames / sample_rate,
+                                    )
+                            if dropped_buffers:
+                                with self._lock:
+                                    record.updated_at = iso_now()
+                                    record.events.append(
+                                        CaptureEvent(
+                                            at=record.updated_at,
+                                            type="warning",
+                                            message=f"采集队列过载，已丢弃 {dropped_buffers} 个音频缓冲。",
+                                            progress=None,
+                                        )
+                                    )
                 self._mark_transcribing_or_completed(record)
             finally:
                 audio.terminate()
@@ -310,6 +366,8 @@ class PlaybackCaptureManager:
         offset_seconds: float,
         duration_seconds: float,
     ) -> None:
+        if record.status == "failed":
+            return
         if not chunk_path.exists() or chunk_path.stat().st_size == 0:
             return
         options = self._options.get(record.id) or EngineOptions()
@@ -440,6 +498,8 @@ class PlaybackCaptureManager:
 
     def _mark_transcribing_or_completed(self, record: CaptureRecord) -> None:
         with self._lock:
+            if record.status == "failed":
+                return
             record.status = "transcribing" if record.chunks else "completed"
             record.level = 0.0
             record.updated_at = iso_now()

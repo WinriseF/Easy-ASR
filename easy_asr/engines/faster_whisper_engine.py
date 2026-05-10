@@ -4,17 +4,15 @@ import importlib.util
 import inspect
 import os
 from pathlib import Path
-from threading import Lock
 
 from easy_asr.audio import probe_duration
 from easy_asr.debug_runtime import flush_logging, get_logger, log_debug, log_warning
 from easy_asr.engines.base import EngineDescriptor, EngineOptions, Segment, TranscriptionResult
+from easy_asr.model_cache import MODEL_CACHE
 from easy_asr.segmentation import sentence_segments_from_words
 from easy_asr.terminology import TerminologyLibrary
 
 
-_MODEL_CACHE: dict[str, object] = {}
-_MODEL_LOCK = Lock()
 LOGGER = get_logger(__name__)
 
 _FASTER_WHISPER_REPOS = {
@@ -65,7 +63,17 @@ class FasterWhisperEngine:
         from faster_whisper import WhisperModel
 
         model_name = options.model_name or "small"
-        model = self._load_model(WhisperModel, model_name, options)
+        with self._model_lease(WhisperModel, model_name, options) as model:
+            return self._transcribe_with_model(model, input_path, options, terminology, progress)
+
+    def _transcribe_with_model(
+        self,
+        model,
+        input_path: Path,
+        options: EngineOptions,
+        terminology: TerminologyLibrary,
+        progress,
+    ) -> TranscriptionResult:
         initial_prompt = terminology.prompt_text() if options.apply_terminology else None
         beam_size = _beam_size_for_preset(options.whisper_preset)
         transcript_mode = _transcript_mode(options.transcript_mode)
@@ -158,20 +166,41 @@ class FasterWhisperEngine:
         from faster_whisper import WhisperModel
 
         model_name = options.model_name or "small"
-        self._load_model(WhisperModel, model_name, options)
+        with self._model_lease(WhisperModel, model_name, options):
+            pass
 
-    def _load_model(self, model_cls, model_name: str, options: EngineOptions):
+    def _model_lease(self, model_cls, model_name: str, options: EngineOptions):
         cache_key = f"{self.id}:{model_name}:cpu:{options.compute_type}:{options.cpu_threads}"
-        with _MODEL_LOCK:
-            if cache_key not in _MODEL_CACHE:
-                model_ref = self._resolve_model_reference(model_name)
-                _MODEL_CACHE[cache_key] = model_cls(
-                    str(model_ref),
-                    device="cpu",
-                    compute_type=options.compute_type or "int8",
-                    cpu_threads=max(1, int(options.cpu_threads or 1)),
-                )
-            return _MODEL_CACHE[cache_key]
+
+        def load_model():
+            model_ref = self._resolve_model_reference(model_name)
+            log_debug(
+                LOGGER,
+                "faster_whisper_model_load_start",
+                model_name=model_name,
+                model_ref=model_ref,
+                compute_type=options.compute_type,
+                cpu_threads=options.cpu_threads,
+                cache_key=cache_key,
+            )
+            flush_logging()
+            model = model_cls(
+                str(model_ref),
+                device="cpu",
+                compute_type=options.compute_type or "int8",
+                cpu_threads=max(1, int(options.cpu_threads or 1)),
+            )
+            log_debug(
+                LOGGER,
+                "faster_whisper_model_load_completed",
+                model_name=model_name,
+                model_ref=model_ref,
+                cache_key=cache_key,
+            )
+            flush_logging()
+            return model
+
+        return MODEL_CACHE.lease(cache_key, load_model, on_evict=_log_model_evicted)
 
     def _resolve_model_reference(self, model_name: str) -> Path | str:
         raw = str(model_name or "small").strip() or "small"
@@ -196,6 +225,11 @@ class FasterWhisperEngine:
             return raw
 
         return _download_faster_whisper_model(repo_id, local_dir)
+
+
+def _log_model_evicted(cache_key: str, model: object) -> None:
+    log_debug(LOGGER, "faster_whisper_model_unloaded", cache_key=cache_key, model_type=type(model).__name__)
+    flush_logging()
 
 
 def _download_faster_whisper_model(repo_id: str, local_dir: Path) -> Path:
